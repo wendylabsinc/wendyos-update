@@ -1,0 +1,17 @@
+[Unit]
+Description=wendy-update auto-commit (finalize a pending update after a healthy boot)
+# v1 health policy: reaching multi-user.target (+ health.d gates inside the
+# verb) equals healthy — matches observed Tegra behavior. The rollback
+# window stays open until this runs.
+After=multi-user.target wendy-update-verify.service
+Wants=wendy-update-verify.service
+
+[Service]
+Type=oneshot
+# Exit 2 = nothing to commit — a success for this unit.
+ExecStart=/usr/bin/wendy-update commit
+SuccessExitStatus=2
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
