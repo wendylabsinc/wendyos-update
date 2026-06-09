@@ -1,0 +1,4 @@
+# Compiled binaries (build artifacts — produced by `go build`, the Yocto
+# recipe, or the arm64 cross-build). vendor/ is intentionally committed for
+# reproducible offline builds and is NOT ignored.
+/bin/
