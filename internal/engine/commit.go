@@ -74,6 +74,18 @@ func (e *Engine) Commit() error {
 		return &PlatformVerifyError{Err: err}
 	}
 
+	// Userspace health gate (product-defined, network-independent):
+	// /etc/wendy-update/health.d/. The firmware checks above are the
+	// baseline; these add product checks. A failure marks the deployment
+	// failed (like a platform-verify failure) so a reboot rolls back.
+	if err := e.runHealthChecks(); err != nil {
+		st.Phase = PhaseFailed
+		if serr := e.SaveState(st); serr != nil {
+			return serr
+		}
+		return err
+	}
+
 	// Housekeeping must not undo a successful update (the validated
 	// reset-inactive-slot-status rule): log, don't fail.
 	if err := e.Conn.MarkGood(); err != nil {

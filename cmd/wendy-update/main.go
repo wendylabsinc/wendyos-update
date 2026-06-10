@@ -28,6 +28,7 @@ type Config struct {
 	Connector      string `json:"connector"`        // override auto-detect
 	DeviceTypePath string `json:"device_type_path"` // override /etc/wendyos/device-type
 	StateDir       string `json:"state_dir"`        // override /data/wendy-update
+	HealthDir      string `json:"health_dir"`       // override /etc/wendy-update/health.d
 }
 
 func main() {
@@ -96,6 +97,10 @@ func exitCode(err error) int {
 	if errors.As(err, &pv) {
 		return 4
 	}
+	var hc *engine.HealthCheckError
+	if errors.As(err, &hc) {
+		return 4 // a failed boot-health gate is a verification failure
+	}
 	return 1
 }
 
@@ -125,6 +130,7 @@ func newEngine() (*engine.Engine, error) {
 		Conn:           conn,
 		StateDir:       stateDir,
 		DeviceTypePath: cfg.DeviceTypePath, // "" -> engine default
+		HealthDir:      cfg.HealthDir,      // "" -> engine default
 		ToolVersion:    version,
 		Progress:       emitProgress,
 	}, nil

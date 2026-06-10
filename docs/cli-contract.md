@@ -22,7 +22,7 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 | 1 | Generic error (message on stderr) |
 | 2 | `commit`: nothing to commit (NOT an error — mirrors mender-update; wendy-agent already special-cases it) |
 | 3 | Artifact rejected (incompatible device, bad checksum, malformed) |
-| 4 | Platform verification failed at commit (caller should expect rollback) |
+| 4 | Verification failed at commit — platform (firmware slot/ESRT) OR a health.d hook; the deployment is marked failed, caller should expect rollback |
 
 ## Output streams
 
@@ -36,13 +36,20 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 - State: `/data/wendy-update/` (see `state-schema.md`)
 - Config: `/etc/wendy-update/config.json` (backend selection override,
   partition map if not autodetected)
-- Health hooks: `/etc/wendy-update/health.d/` (executables; non-zero
-  exit defers auto-commit)
+- Health hooks: `/etc/wendy-update/health.d/` — executables run by
+  `commit` in lexical order after the firmware-level verify. The first
+  non-zero exit fails the gate (commit marks the deployment failed, exit
+  4). Empty/absent dir = firmware-level gate only. Network-independent;
+  products add hooks here to gate on app/service readiness.
 
 ## systemd units (shipped with the tool)
 
 - `wendy-update-verify.service` — early boot, before the commit unit:
   checks slot-health efivars + double-boot detection; marks a pending
   deployment failed if the platform flagged the boot.
-- `wendy-update-commit.service` — oneshot after `multi-user.target`
-  (+ health.d gates): runs `wendy-update commit`.
+- `wendy-update-commit.service` — oneshot, ordered after
+  `wendy-update-verify.service` + `data.mount` (NOT `multi-user.target`,
+  to stay network-independent); runs `wendy-update commit`, which applies
+  the health.d gate. `Before=wendy-update-boot-complete.target`.
+- `wendy-update-boot-complete.target` — passive milestone reached once the
+  running slot has been committed; downstream units may order after it.

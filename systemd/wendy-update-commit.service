@@ -1,10 +1,16 @@
 [Unit]
 Description=wendy-update auto-commit (finalize a pending update after a healthy boot)
-# v1 health policy: reaching multi-user.target (+ health.d gates inside the
-# verb) equals healthy — matches observed Tegra behavior. The rollback
-# window stays open until this runs.
-After=multi-user.target wendy-update-verify.service
+# Network-independent gate. Order after the verifier (firmware slot
+# health + double-boot) and /data (where the pending state lives), NOT
+# after multi-user.target — that pulls in network-online (radvd,
+# agent-updater) and would block commit on the network coming up. The
+# userspace health policy lives in the commit verb's health.d hooks
+# (/etc/wendy-update/health.d/), which products extend; with no hooks the
+# firmware-level verify is the baseline gate.
+After=wendy-update-verify.service data.mount
 Wants=wendy-update-verify.service
+# Reaching boot-complete.target means the running slot was committed.
+Before=wendy-update-boot-complete.target
 
 [Service]
 Type=oneshot
@@ -14,4 +20,7 @@ SuccessExitStatus=2
 RemainAfterExit=yes
 
 [Install]
+# Pulled into the boot transaction, but ordered only after its concrete
+# deps above (not after the target itself), so it fires without waiting
+# on network-online.
 WantedBy=multi-user.target

@@ -1,0 +1,10 @@
+[Unit]
+Description=wendy-update boot complete (running slot committed)
+# A passive milestone: reached once wendy-update-commit.service has run
+# for this boot (it is ordered Before this target). Downstream units that
+# should only act on a committed system can order After this target.
+# Network-independent — does not pull in network-online.target.
+DefaultDependencies=no
+
+[Install]
+WantedBy=multi-user.target

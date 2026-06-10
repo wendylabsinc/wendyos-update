@@ -40,6 +40,7 @@ type Engine struct {
 	Conn           connector.Connector
 	StateDir       string // default: StateDir const
 	DeviceTypePath string // default: DefaultDeviceTypePath
+	HealthDir      string // default: DefaultHealthDir; commit runs its executables
 	ToolVersion    string
 	Progress       Progress // may be nil
 }
