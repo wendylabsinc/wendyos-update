@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/wendylabsinc/wendy-os-update/internal/connector"
 	_ "github.com/wendylabsinc/wendy-os-update/internal/connector/tegrauefi" // register
 	"github.com/wendylabsinc/wendy-os-update/internal/engine"
+	wlog "github.com/wendylabsinc/wendy-os-update/internal/log"
 )
 
 const version = "0.1.0-dev"
@@ -31,7 +33,20 @@ type Config struct {
 	HealthDir      string `json:"health_dir"`       // override /etc/wendy-update/health.d
 }
 
+// ui renders human-facing logs and the progress bar to stderr; stdout
+// stays the machine-readable JSON channel (docs/cli-contract.md).
+var ui *wlog.Logger
+
+// stdoutIsTTY suppresses the high-frequency progress JSON when a human is
+// watching stdout directly — machine callers always pipe stdout, so they
+// still get it.
+var stdoutIsTTY bool
+
 func main() {
+	ui = wlog.New(os.Stderr, wlog.Detect(os.Stderr))
+	slog.SetDefault(ui.Slog())
+	stdoutIsTTY = wlog.IsTTY(os.Stdout)
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(1)
@@ -68,7 +83,14 @@ func main() {
 	}
 
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "wendy-update:", err)
+		// "nothing to commit" is the normal every-boot outcome of the
+		// auto-commit service (exit 2) — log it at info, not as an error,
+		// so it does not show up red/high-priority in the journal.
+		if errors.Is(err, engine.ErrNothingToCommit) {
+			slog.Info(err.Error())
+		} else {
+			slog.Error(err.Error())
+		}
 		os.Exit(exitCode(err))
 	}
 }
@@ -111,7 +133,7 @@ func loadConfig() Config {
 		return cfg // absent config is fine: all defaults
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "wendy-update: warning: ignoring malformed %s: %v\n", configPath, err)
+		slog.Warn("ignoring malformed config", "path", configPath, "err", err)
 	}
 	return cfg
 }
@@ -136,11 +158,19 @@ func newEngine() (*engine.Engine, error) {
 	}, nil
 }
 
-// emitProgress prints the contract's JSON lines on stdout
-// (stdout is machine-readable ONLY — docs/cli-contract.md).
+// emitProgress drives both progress channels: the contract's JSON lines
+// on stdout (machine-readable ONLY — docs/cli-contract.md), and the
+// human-facing bar/discrete lines on stderr via ui. The JSON is skipped
+// when stdout is a terminal, where a human wants the bar, not JSON noise;
+// machine callers pipe stdout, so they still receive it.
 func emitProgress(phase string, percent int) {
-	line, _ := json.Marshal(map[string]any{"phase": phase, "percent": percent})
-	fmt.Println(string(line))
+	if !stdoutIsTTY {
+		line, _ := json.Marshal(map[string]any{"phase": phase, "percent": percent})
+		fmt.Println(string(line))
+	}
+	if ui != nil {
+		ui.Progress(phase, percent)
+	}
 }
 
 func cmdInstall(src string) error {
@@ -184,8 +214,9 @@ func cmdInstall(src string) error {
 		"reboot_required":   true,
 	})
 	fmt.Println(string(line))
-	fmt.Fprintf(os.Stderr, "wendy-update: installed %s to slot %s — reboot to activate\n",
-		res.ArtifactName, res.TargetSlot)
+	slog.Info("installed — reboot to activate",
+		"artifact", res.ArtifactName, "version", res.ArtifactVersion,
+		"slot", res.TargetSlot.String(), "bootloader_update", res.BootloaderUpdate)
 	return nil
 }
 
@@ -229,7 +260,7 @@ func cmdCommit() error {
 	if err := eng.Commit(); err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, "wendy-update: committed")
+	slog.Info("committed")
 	return nil
 }
 
@@ -245,11 +276,11 @@ func cmdVerifyBoot() error {
 	eng, err := newEngine()
 	if err != nil {
 		// Best-effort: a missing connector must not fail the boot.
-		fmt.Fprintf(os.Stderr, "wendy-update: verify-boot: %v\n", err)
+		slog.Warn("verify-boot: skipped", "err", err)
 		return nil
 	}
 	if err := eng.VerifyBoot(); err != nil {
-		fmt.Fprintf(os.Stderr, "wendy-update: verify-boot: %v\n", err)
+		slog.Warn("verify-boot", "err", err)
 	}
 	return nil
 }

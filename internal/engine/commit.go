@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -52,6 +53,10 @@ func (e *Engine) Commit() error {
 		return fmt.Errorf("pending update has unknown phase %q", st.Phase)
 	}
 
+	slog.Info("commit: finalizing pending update",
+		"artifact", st.ArtifactName, "version", st.ArtifactVersion,
+		"target", connector.Slot(st.TargetSlot).String())
+
 	cur, err := e.Conn.CurrentSlot()
 	if err != nil {
 		return err
@@ -65,6 +70,7 @@ func (e *Engine) Commit() error {
 		}
 		return &PlatformVerifyError{Err: fmt.Errorf("running slot %s but the update targeted slot %d (firmware fallback)", cur, st.TargetSlot)}
 	}
+	slog.Info("commit: running expected slot", "slot", cur.String())
 
 	if err := e.Conn.VerifyPlatformUpdate(st.BootloaderUpdate); err != nil {
 		st.Phase = PhaseFailed
@@ -86,10 +92,12 @@ func (e *Engine) Commit() error {
 		return err
 	}
 
+	slog.Info("commit: verification passed")
+
 	// Housekeeping must not undo a successful update (the validated
 	// reset-inactive-slot-status rule): log, don't fail.
 	if err := e.Conn.MarkGood(); err != nil {
-		fmt.Fprintf(os.Stderr, "wendy-update: warning: post-commit housekeeping failed: %v\n", err)
+		slog.Warn("post-commit housekeeping failed", "err", err)
 	}
 
 	// Order per state-schema.md: clear state first, then history —
@@ -103,8 +111,9 @@ func (e *Engine) Commit() error {
 		Committed:       time.Now().UTC(),
 		Slot:            st.TargetSlot,
 	}); err != nil {
-		fmt.Fprintf(os.Stderr, "wendy-update: warning: could not record install history: %v\n", err)
+		slog.Warn("could not record install history", "err", err)
 	}
+	slog.Info("commit: done", "artifact", st.ArtifactName, "slot", connector.Slot(st.TargetSlot).String())
 	return nil
 }
 
@@ -140,6 +149,8 @@ func (e *Engine) Rollback() error {
 	if err != nil {
 		return err
 	}
+	slog.Info("rollback: reverting pending update",
+		"artifact", st.ArtifactName, "from", target.String(), "to", origin.String())
 
 	if cur == origin {
 		// Pre-reboot rollback: a staged-but-unprocessed platform update
@@ -147,6 +158,7 @@ func (e *Engine) Rollback() error {
 		if err := e.Conn.AbortPlatformUpdate(); err != nil {
 			return err
 		}
+		slog.Info("rollback: unstaged pending platform update")
 	}
 	if err := e.Conn.SwapSlot(origin, false); err != nil {
 		return err
@@ -163,7 +175,9 @@ func (e *Engine) Rollback() error {
 	})
 	e.emitRaw(string(line))
 	if res.RebootRequired {
-		fmt.Fprintln(os.Stderr, "wendy-update: rolled back — reboot to return to the previous system")
+		slog.Info("rolled back — reboot to return to the previous system", "slot", origin.String())
+	} else {
+		slog.Info("rolled back", "slot", origin.String())
 	}
 	return nil
 }
@@ -194,17 +208,20 @@ func (e *Engine) VerifyBoot() error {
 	failed := false
 	if compromised, err := e.Conn.BootIsCompromised(); err == nil && compromised {
 		failed = true
-		fmt.Fprintln(os.Stderr, "wendy-update: boot verifier: platform flagged a slot as unhealthy")
+		slog.Warn("boot verifier: platform flagged a slot as unhealthy")
 	}
 	if cur, err := e.Conn.CurrentSlot(); err == nil && int(cur) != st.TargetSlot {
 		failed = true
-		fmt.Fprintf(os.Stderr, "wendy-update: boot verifier: running slot %s, update targeted slot %d (firmware fallback)\n", cur, st.TargetSlot)
+		slog.Warn("boot verifier: firmware fallback detected",
+			"running", cur.String(), "target", connector.Slot(st.TargetSlot).String())
 	}
 
 	if failed {
+		slog.Warn("boot verifier: marking pending deployment failed", "artifact", st.ArtifactName)
 		st.Phase = PhaseFailed
 		return e.SaveState(st)
 	}
+	slog.Info("boot verifier: pending update looks healthy", "artifact", st.ArtifactName)
 	return nil
 }
 

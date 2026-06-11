@@ -28,8 +28,21 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 
 - **stdout**: machine-readable only. JSON lines:
   `{"phase":"download|write|verify|flip|commit","percent":0-100,"msg":"..."}`
-  `status --json` prints a single JSON object.
-- **stderr**: human-readable logs. Never parse stderr.
+  `status --json` prints a single JSON object. The high-frequency progress
+  JSON is suppressed when stdout is a TTY (a human gets the stderr bar
+  instead); machine callers always pipe stdout, so they still receive it.
+- **stderr**: human-readable logs — never parse it. Format adapts to where
+  the tool runs (`internal/log`):
+  - **interactive terminal**: colored step lines + an in-place progress bar
+    (carriage-return updated).
+  - **under systemd** (detected via `$JOURNAL_STREAM`): plain lines carrying
+    sd-daemon `<N>` severity prefixes (`<3>` err, `<4>` warning, `<6>` info,
+    `<7>` debug) that journald parses into PRIORITY; progress becomes
+    discrete throttled lines (no carriage returns). systemd captures the
+    service's stderr into the journal automatically — no socket wiring.
+  - **piped/redirected**: plain timestamped lines.
+  - Every line is tagged `wendy-update:`. `WENDY_DEBUG=1` enables debug
+    records; `NO_COLOR` disables color.
 
 ## Paths
 

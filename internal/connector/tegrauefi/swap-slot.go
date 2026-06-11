@@ -20,6 +20,7 @@ package tegrauefi
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,6 +76,7 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 
 	if !hasMarker {
 		// ROOTFS-ONLY: switch the chain via nvbootctrl.
+		slog.Info("swap: rootfs-only update, switching boot slot", "slot", s.String())
 		if err := c.recordBootAttempt(s); err != nil {
 			return err
 		}
@@ -86,6 +88,7 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	}
 
 	// CAPSULE UPDATE.
+	slog.Info("swap: bootloader marker present, staging capsule update", "slot", s.String())
 	if _, err := os.Stat(capsule); err != nil {
 		return fmt.Errorf("swap to slot %s: bootloader update requested by rootfs marker but capsule missing at %s", s, CapsuleSrcPath)
 	}
@@ -98,7 +101,7 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 			return fmt.Errorf("swap to slot %s: save bootloader version: %w", s, werr)
 		}
 	} else {
-		fmt.Fprintf(os.Stderr, "wendy-update: warning: could not record pre-update bootloader version: %v\n", err)
+		slog.Warn("could not record pre-update bootloader version", "err", err)
 	}
 
 	espDir, err := c.espMountpoint()

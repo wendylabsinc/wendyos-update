@@ -6,6 +6,7 @@ package tegrauefi
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -51,10 +52,11 @@ func (c *Controller) BootIsCompromised() (bool, error) {
 func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 	if _, err := os.Stat(c.RootDir + MarkerPath); err != nil {
 		if blUpdate {
-			fmt.Fprintln(os.Stderr, "wendy-update: note: manifest said bootloader_update but the running rootfs has no marker; skipping platform verification")
+			slog.Info("platform verify: manifest declared bootloader_update but the running rootfs has no marker; skipping")
 		}
 		return nil
 	}
+	slog.Info("platform verify: checking bootloader update (version + ESRT cascade)")
 
 	// 1) version comparison
 	if before, err := os.ReadFile(c.blVersionBeforePath()); err == nil {
@@ -62,14 +64,15 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 		if verr == nil {
 			if strings.TrimSpace(string(before)) != after {
 				_ = os.Remove(c.blVersionBeforePath())
+				slog.Info("platform verify: bootloader version changed — capsule applied", "version", after)
 				return nil // version changed: capsule applied
 			}
-			fmt.Fprintf(os.Stderr, "wendy-update: bootloader version unchanged (%s); checking ESRT\n", after)
+			slog.Info("platform verify: bootloader version unchanged; checking ESRT", "version", after)
 		} else {
-			fmt.Fprintf(os.Stderr, "wendy-update: warning: %v; checking ESRT\n", verr)
+			slog.Warn("platform verify: could not read bootloader version; checking ESRT", "err", verr)
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, "wendy-update: warning: no pre-update bootloader version recorded; checking ESRT")
+		slog.Warn("platform verify: no pre-update bootloader version recorded; checking ESRT")
 	}
 
 	// 2) ESRT verdict
@@ -81,6 +84,7 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 		switch {
 		case status == 0:
 			_ = os.Remove(c.blVersionBeforePath())
+			slog.Info("platform verify: ESRT reports success", "status", 0)
 			return nil
 		case status >= 1 && status <= 6:
 			return fmt.Errorf("platform verify: ESRT status %d (standard UEFI capsule error)", status)
@@ -91,14 +95,14 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 		case status >= 0x1000 && status <= 0x4000:
 			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA vendor error)", status)
 		default:
-			fmt.Fprintf(os.Stderr, "wendy-update: warning: unknown ESRT status %d; falling back to boot-success\n", status)
+			slog.Warn("platform verify: unknown ESRT status; falling back to boot-success", "status", status)
 		}
 	} else {
-		fmt.Fprintln(os.Stderr, "wendy-update: warning: ESRT not readable; falling back to boot-success")
+		slog.Warn("platform verify: ESRT not readable; falling back to boot-success")
 	}
 
 	// 3) fallback: the system booted to this point
-	fmt.Fprintln(os.Stderr, "wendy-update: WARNING: could not definitively verify the bootloader update via version or ESRT; the system booted, assuming success — manual check recommended")
+	slog.Warn("platform verify: could not confirm the bootloader update via version or ESRT; the system booted, assuming success — manual check recommended")
 	_ = os.Remove(c.blVersionBeforePath())
 	return nil
 }

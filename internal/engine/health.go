@@ -10,6 +10,7 @@ package engine
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -64,7 +65,7 @@ func (e *Engine) runHealthChecks() error {
 
 	for _, name := range names {
 		path := filepath.Join(dir, name)
-		fmt.Fprintf(os.Stderr, "wendy-update: health check: %s\n", name)
+		slog.Info("commit: running health check", "hook", name)
 		cmd := exec.Command(path)
 		cmd.Stdout = os.Stderr // hook output is human-facing
 		cmd.Stderr = os.Stderr

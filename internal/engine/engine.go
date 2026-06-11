@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -75,6 +76,9 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 		return nil, reject("%v", err)
 	}
 	m := r.Manifest
+	slog.Info("install: artifact opened",
+		"artifact", m.ArtifactName, "version", m.ArtifactVersion,
+		"bootloader_update", m.BootloaderUpdate)
 
 	// Policy gates.
 	devType, err := e.deviceType()
@@ -87,6 +91,7 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 	if !versionAtLeast(e.ToolVersion, m.MinToolVersion) {
 		return nil, reject("artifact requires tool >= %s, this is %s", m.MinToolVersion, e.ToolVersion)
 	}
+	slog.Info("install: artifact accepted", "device", devType)
 
 	// Resolve the target slot.
 	cur, err := e.Conn.CurrentSlot()
@@ -98,6 +103,9 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	slog.Info("install: writing rootfs to inactive slot",
+		"current", cur.String(), "target", target.String(), "dev", dev,
+		"size", m.Payload.Size)
 
 	// Stream the payload onto the inactive slot.
 	p, err := r.Payload()
@@ -125,6 +133,7 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 
 	// Verify BEFORE persisting any state (state-schema.md ordering).
 	e.progress("verify", -1)
+	slog.Info("install: verifying payload", "written", written)
 	if m.Payload.Size > 0 && written != m.Payload.Size {
 		return nil, reject("payload size mismatch: wrote %d, manifest says %d", written, m.Payload.Size)
 	}
@@ -150,6 +159,7 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 	if err := e.Conn.PrepareTarget(target); err != nil {
 		return nil, err // state stays phase=written; rollback/mark-good recovers
 	}
+	slog.Info("install: activating target slot", "target", target.String())
 	e.progress("swap", -1)
 	// Install swap: the connector inspects the freshly-written rootfs and
 	// stages a platform update if it requests one (the rootfs marker is
