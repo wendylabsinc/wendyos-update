@@ -75,9 +75,9 @@ type sparseReader struct {
 	chunksLeft uint32
 
 	// pending output for the current chunk
-	emit func(p []byte) (int, error) // produces this chunk's bytes
-	rem  int64                       // bytes left in the current chunk
-	fill [4]byte                     // FILL pattern
+	emit    func(p []byte) (int, error) // produces this chunk's bytes
+	rem     int64                       // bytes left in the current chunk
+	fill    [4]byte                     // FILL pattern
 	fillPos int
 }
 

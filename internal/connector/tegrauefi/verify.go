@@ -15,6 +15,19 @@ import (
 	"github.com/wendylabsinc/wendy-os-update/internal/connector"
 )
 
+// ESRT entry0 last_attempt_status codes (validated: t234 incident analysis
+// + t264 Phase 1). 0 = success; 1-6 = standard UEFI capsule errors; the
+// NVIDIA-specific codes and vendor range are documented per NVIDIA L4T.
+const (
+	esrtSuccess           = 0
+	esrtUEFIErrLo         = 1 // 1..6: standard UEFI capsule errors
+	esrtUEFIErrHi         = 6
+	esrtNvidiaAuthFail    = 6163   // capsule auth/cert failure (certs not enrolled)
+	esrtNvidiaSKUMismatch = 6164   // device SKU not in the capsule's BUP
+	esrtNvidiaVendorLo    = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
+	esrtNvidiaVendorHi    = 0x4000
+)
+
 // BootIsCompromised reports whether the firmware flagged either slot
 // (RootfsStatusSlot status != 0). The engine calls this only while an
 // update is pending — a 0xFF here right after a swap means UEFI burned
@@ -82,17 +95,17 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 			return fmt.Errorf("platform verify: unparseable ESRT status %q", strings.TrimSpace(string(raw)))
 		}
 		switch {
-		case status == 0:
+		case status == esrtSuccess:
 			_ = os.Remove(c.blVersionBeforePath())
-			slog.Info("platform verify: ESRT reports success", "status", 0)
+			slog.Info("platform verify: ESRT reports success", "status", esrtSuccess)
 			return nil
-		case status >= 1 && status <= 6:
+		case status >= esrtUEFIErrLo && status <= esrtUEFIErrHi:
 			return fmt.Errorf("platform verify: ESRT status %d (standard UEFI capsule error)", status)
-		case status == 6163:
-			return fmt.Errorf("platform verify: ESRT status 6163 (NVIDIA: capsule authentication failure — certificates not enrolled in device UEFI)")
-		case status == 6164:
-			return fmt.Errorf("platform verify: ESRT status 6164 (NVIDIA: device SKU not included in the capsule's BUP)")
-		case status >= 0x1000 && status <= 0x4000:
+		case status == esrtNvidiaAuthFail:
+			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: capsule authentication failure — certificates not enrolled in device UEFI)", esrtNvidiaAuthFail)
+		case status == esrtNvidiaSKUMismatch:
+			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: device SKU not included in the capsule's BUP)", esrtNvidiaSKUMismatch)
+		case status >= esrtNvidiaVendorLo && status <= esrtNvidiaVendorHi:
 			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA vendor error)", status)
 		default:
 			slog.Warn("platform verify: unknown ESRT status; falling back to boot-success", "status", status)

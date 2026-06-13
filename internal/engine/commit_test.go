@@ -107,8 +107,12 @@ func TestRollbackPreReboot(t *testing.T) {
 	e := testEngine(t, f)
 	e.SaveState(swappedState())
 
-	if err := e.Rollback(); err != nil {
+	res, err := e.Rollback()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if res.OriginSlot != connector.SlotA || res.RebootRequired {
+		t.Fatalf("pre-reboot result: %+v (want origin A, reboot_required false)", res)
 	}
 	if f.aborted != 1 {
 		t.Fatal("AbortPlatformUpdate not called on pre-reboot rollback")
@@ -127,8 +131,12 @@ func TestRollbackPostReboot(t *testing.T) {
 	e := testEngine(t, f)
 	e.SaveState(swappedState())
 
-	if err := e.Rollback(); err != nil {
+	res, err := e.Rollback()
+	if err != nil {
 		t.Fatal(err)
+	}
+	if res.OriginSlot != connector.SlotA || !res.RebootRequired {
+		t.Fatalf("post-reboot result: %+v (want origin A, reboot_required true)", res)
 	}
 	if f.aborted != 0 {
 		t.Fatal("AbortPlatformUpdate must not run post-reboot (capsule already consumed)")
@@ -143,7 +151,7 @@ func TestRollbackPostReboot(t *testing.T) {
 
 func TestRollbackNothingPending(t *testing.T) {
 	e := testEngine(t, &fakeConn{cur: connector.SlotA})
-	if err := e.Rollback(); err == nil {
+	if _, err := e.Rollback(); err == nil {
 		t.Fatal("expected error with nothing pending")
 	}
 }

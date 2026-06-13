@@ -6,20 +6,59 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/wendylabsinc/wendy-os-update/internal/connector"
 	_ "github.com/wendylabsinc/wendy-os-update/internal/connector/tegrauefi" // register
 	"github.com/wendylabsinc/wendy-os-update/internal/engine"
 	wlog "github.com/wendylabsinc/wendy-os-update/internal/log"
 )
+
+// HTTP timeouts for streaming installs. No overall client timeout — the
+// payload is multi-GB and may legitimately stream for minutes — but each
+// connection stage is bounded so a dead/unreachable server fails fast
+// instead of hanging forever (the old http.Get default had none).
+const (
+	httpDialTimeout           = 30 * time.Second
+	httpTLSHandshakeTimeout   = 30 * time.Second
+	httpResponseHeaderTimeout = 60 * time.Second
+)
+
+var installHTTPClient = &http.Client{
+	Transport: &http.Transport{
+		DialContext:           (&net.Dialer{Timeout: httpDialTimeout}).DialContext,
+		TLSHandshakeTimeout:   httpTLSHandshakeTimeout,
+		ResponseHeaderTimeout: httpResponseHeaderTimeout,
+	},
+}
+
+// ctxReader makes an in-progress read abort promptly when ctx is cancelled
+// (Ctrl-C / systemd stop), without threading context through the block
+// writer. For HTTP the request context already unblocks a blocked Read;
+// this also covers local-file reads and tight copy loops.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c *ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
 
 const version = "0.1.0-dev"
 
@@ -30,7 +69,8 @@ type Config struct {
 	Connector      string `json:"connector"`        // override auto-detect
 	DeviceTypePath string `json:"device_type_path"` // override /etc/wendyos/device-type
 	StateDir       string `json:"state_dir"`        // override /data/wendy-update
-	HealthDir      string `json:"health_dir"`       // override /etc/wendy-update/health.d
+	HooksDir       string `json:"hooks_dir"`        // override /etc/wendy-update (root of <phase>.d dirs)
+	HealthDir      string `json:"health_dir"`       // legacy: override the health phase dir only
 }
 
 // ui renders human-facing logs and the progress bar to stderr; stdout
@@ -47,10 +87,19 @@ func main() {
 	slog.SetDefault(ui.Slog())
 	stdoutIsTTY = wlog.IsTTY(os.Stdout)
 
+	// Cancel long operations (download/write) cleanly on Ctrl-C or a
+	// systemd stop, instead of leaving a half-written slot on a hard kill.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(1)
 	}
+
+	// Anchor every invocation in the log (version + verb) — correlates
+	// journal entries across the verify/commit service boots.
+	slog.Info("wendy-update", "version", version, "verb", os.Args[1])
 
 	var err error
 	switch os.Args[1] {
@@ -59,7 +108,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: wendy-update install <url|path>")
 			os.Exit(1)
 		}
-		err = cmdInstall(os.Args[2])
+		err = cmdInstall(ctx, os.Args[2])
 	case "commit":
 		err = cmdCommit()
 	case "rollback":
@@ -106,24 +155,35 @@ usage:
   wendy-update pack <flags>         build a .wendy artifact from a rootfs image (host-side)`)
 }
 
+// Contract exit codes (docs/cli-contract.md).
+const (
+	exitError           = 1 // generic error
+	exitNothingToCommit = 2 // commit: nothing to commit (not an error)
+	exitRejected        = 3 // artifact rejected (incompatible/bad/malformed)
+	exitVerifyFailed    = 4 // platform or health verification failed at commit
+)
+
 // exitCode maps typed errors to contract exit codes (docs/cli-contract.md).
 func exitCode(err error) int {
 	if errors.Is(err, engine.ErrNothingToCommit) {
-		return 2
+		return exitNothingToCommit
 	}
 	var rej *engine.RejectError
 	if errors.As(err, &rej) {
-		return 3
+		return exitRejected
 	}
 	var pv *engine.PlatformVerifyError
 	if errors.As(err, &pv) {
-		return 4
+		return exitVerifyFailed
 	}
-	var hc *engine.HealthCheckError
-	if errors.As(err, &hc) {
-		return 4 // a failed boot-health gate is a verification failure
+	var he *engine.HookError
+	if errors.As(err, &he) {
+		if he.Phase == engine.HookHealth {
+			return exitVerifyFailed // a failed boot-health gate is a verification failure
+		}
+		return exitError // pre/post-install gate refused the update
 	}
-	return 1
+	return exitError
 }
 
 func loadConfig() Config {
@@ -152,7 +212,8 @@ func newEngine() (*engine.Engine, error) {
 		Conn:           conn,
 		StateDir:       stateDir,
 		DeviceTypePath: cfg.DeviceTypePath, // "" -> engine default
-		HealthDir:      cfg.HealthDir,      // "" -> engine default
+		HooksDir:       cfg.HooksDir,       // "" -> engine default (/etc/wendy-update)
+		HealthDir:      cfg.HealthDir,      // legacy health-phase override
 		ToolVersion:    version,
 		Progress:       emitProgress,
 	}, nil
@@ -173,7 +234,7 @@ func emitProgress(phase string, percent int) {
 	}
 }
 
-func cmdInstall(src string) error {
+func cmdInstall(ctx context.Context, src string) error {
 	eng, err := newEngine()
 	if err != nil {
 		return err
@@ -182,7 +243,11 @@ func cmdInstall(src string) error {
 	var reader io.Reader
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
 		emitProgress("download", -1)
-		resp, err := http.Get(src)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, src, nil)
+		if err != nil {
+			return fmt.Errorf("download: %w", err)
+		}
+		resp, err := installHTTPClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("download: %w", err)
 		}
@@ -190,6 +255,7 @@ func cmdInstall(src string) error {
 		if resp.StatusCode != http.StatusOK {
 			return fmt.Errorf("download: %s returned %s", src, resp.Status)
 		}
+		slog.Info("install: downloading", "url", src, "status", resp.Status, "content_length", resp.ContentLength)
 		reader = resp.Body
 	} else {
 		f, err := os.Open(src)
@@ -200,23 +266,28 @@ func cmdInstall(src string) error {
 		reader = f
 	}
 
-	res, err := eng.Install(reader)
+	res, err := eng.Install(&ctxReader{ctx: ctx, r: reader})
 	if err != nil {
 		return err
 	}
-	line, _ := json.Marshal(map[string]any{
-		"phase":             "done",
-		"percent":           100,
-		"artifact_name":     res.ArtifactName,
-		"artifact_version":  res.ArtifactVersion,
-		"target_slot":       res.TargetSlot.String(),
-		"bootloader_update": res.BootloaderUpdate,
-		"reboot_required":   true,
-	})
-	fmt.Println(string(line))
-	slog.Info("installed — reboot to activate",
+	// Machine JSON on stdout (suppressed when a human is watching a TTY).
+	if !stdoutIsTTY {
+		line, _ := json.Marshal(map[string]any{
+			"phase":             "done",
+			"percent":           100,
+			"artifact_name":     res.ArtifactName,
+			"artifact_version":  res.ArtifactVersion,
+			"target_slot":       res.TargetSlot.String(),
+			"bootloader_update": res.BootloaderUpdate,
+			"reboot_required":   true,
+		})
+		fmt.Println(string(line))
+	}
+	// Human-readable line on stderr carries the same useful fields.
+	slog.Info("install complete — reboot to activate",
 		"artifact", res.ArtifactName, "version", res.ArtifactVersion,
-		"slot", res.TargetSlot.String(), "bootloader_update", res.BootloaderUpdate)
+		"target_slot", res.TargetSlot.String(), "bootloader_update", res.BootloaderUpdate,
+		"reboot_required", true)
 	return nil
 }
 
@@ -269,7 +340,21 @@ func cmdRollback() error {
 	if err != nil {
 		return err
 	}
-	return eng.Rollback()
+	res, err := eng.Rollback()
+	if err != nil {
+		return err
+	}
+	// Machine JSON on stdout (suppressed when a human is watching a TTY);
+	// the human-readable line is logged by the engine on stderr.
+	if !stdoutIsTTY {
+		line, _ := json.Marshal(map[string]any{
+			"phase":           "rollback",
+			"origin_slot":     res.OriginSlot.String(),
+			"reboot_required": res.RebootRequired,
+		})
+		fmt.Println(string(line))
+	}
+	return nil
 }
 
 func cmdVerifyBoot() error {

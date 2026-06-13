@@ -49,11 +49,24 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 - State: `/data/wendy-update/` (see `state-schema.md`)
 - Config: `/etc/wendy-update/config.json` (backend selection override,
   partition map if not autodetected)
-- Health hooks: `/etc/wendy-update/health.d/` — executables run by
-  `commit` in lexical order after the firmware-level verify. The first
-  non-zero exit fails the gate (commit marks the deployment failed, exit
-  4). Empty/absent dir = firmware-level gate only. Network-independent;
-  products add hooks here to gate on app/service readiness.
+- Lifecycle hooks: `/etc/wendy-update/<phase>.d/` — products drop
+  executables that run in lexical order at fixed points in the update
+  sequence. Empty/absent dir = no hooks. Network-independent by design
+  (gate on local app/service readiness, not connectivity). Each hook
+  receives update context in its environment: `WENDY_PHASE`,
+  `WENDY_ARTIFACT_NAME`, `WENDY_ARTIFACT_VERSION`, `WENDY_TARGET_SLOT`,
+  `WENDY_CURRENT_SLOT`, `WENDY_BOOTLOADER_UPDATE`, `WENDY_STATE_DIR`.
+
+  | Dir | Runs | First non-zero exit |
+  |---|---|---|
+  | `pre-install.d/` | `install`, after the device/version gates, before writing the slot | aborts install (nothing written), exit 1 |
+  | `post-install.d/` | `install`, after the slot swap, before "reboot required" | aborts + unwinds the staged update (re-points the active slot back, drops any staged capsule), exit 1 |
+  | `health.d/` | `commit`, after the firmware-level platform verify | fails the commit gate: deployment marked failed, exit 4 (a reboot rolls back) |
+  | `post-commit.d/` | `commit`, after the update is finalized | advisory — logged, never fatal (too late to undo) |
+  | `on-failure.d/` | when a deployment is marked failed (boot-verify fallback, or a commit/health/platform failure) | advisory — logged, never fatal |
+
+  The health phase honours a legacy `health_dir` config override; all
+  phases otherwise live under `hooks_dir` (default `/etc/wendy-update`).
 
 ## systemd units (shipped with the tool)
 

@@ -41,7 +41,8 @@ type Engine struct {
 	Conn           connector.Connector
 	StateDir       string // default: StateDir const
 	DeviceTypePath string // default: DefaultDeviceTypePath
-	HealthDir      string // default: DefaultHealthDir; commit runs its executables
+	HooksDir       string // default: DefaultHooksDir; root for the per-phase hook dirs
+	HealthDir      string // legacy override for the health phase only (config health_dir)
 	ToolVersion    string
 	Progress       Progress // may be nil
 }
@@ -103,6 +104,15 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	// pre-install gate: products may refuse the update before anything is
+	// written (custom compatibility / free-space / policy). A non-zero exit
+	// aborts the install with nothing changed.
+	env := e.hookEnv(m.ArtifactName, m.ArtifactVersion, target, cur, m.BootloaderUpdate)
+	if err := e.runHooks(HookPreInstall, env); err != nil {
+		return nil, err
+	}
+
 	slog.Info("install: writing rootfs to inactive slot",
 		"current", cur.String(), "target", target.String(), "dev", dev,
 		"size", m.Payload.Size)
@@ -113,6 +123,7 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 		return nil, reject("%v", err)
 	}
 	e.progress("write", 0)
+	writeStart := time.Now()
 	var lastPct = -2
 	written, digest, err := blockdev.WriteImage(dev, p, m.Payload.Compression, func(w int64) {
 		pct := -1
@@ -129,6 +140,10 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 	})
 	if err != nil {
 		return nil, fmt.Errorf("writing %s: %w", dev, err)
+	}
+	if secs := time.Since(writeStart).Seconds(); secs > 0 {
+		slog.Info("install: rootfs written", "bytes", written,
+			"seconds", int64(secs), "MB_per_s", int64(float64(written)/secs/1e6))
 	}
 
 	// Verify BEFORE persisting any state (state-schema.md ordering).
@@ -170,6 +185,23 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 
 	st.Phase = PhaseSwapped
 	if err := e.SaveState(st); err != nil {
+		return nil, err
+	}
+
+	// post-install hook (after the swap, before reboot). On failure, unwind
+	// the staged update so the slot is left clean: drop any staged platform
+	// update, re-point the active slot back to the running one, clear state.
+	if err := e.runHooks(HookPostInstall, env); err != nil {
+		slog.Warn("post-install hook failed; unwinding staged update", "err", err)
+		if aerr := e.Conn.AbortPlatformUpdate(); aerr != nil {
+			slog.Warn("unwind: abort platform update", "err", aerr)
+		}
+		if serr := e.Conn.SwapSlot(cur, false); serr != nil {
+			slog.Warn("unwind: re-point active slot", "err", serr)
+		}
+		if cerr := e.ClearState(); cerr != nil {
+			slog.Warn("unwind: clear state", "err", cerr)
+		}
 		return nil, err
 	}
 

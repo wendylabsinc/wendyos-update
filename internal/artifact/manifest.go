@@ -6,6 +6,9 @@ package artifact
 
 import "fmt"
 
+// sha256HexLen is the length of a SHA-256 digest in lowercase hex.
+const sha256HexLen = 64
+
 // Manifest is the parsed manifest.json (format v1).
 type Manifest struct {
 	FormatVersion     int      `json:"format_version"`
@@ -53,7 +56,7 @@ func (m *Manifest) Validate() error {
 	if m.Payload.Name == "" {
 		return fmt.Errorf("payload.name is required")
 	}
-	if len(m.Payload.SHA256) != 64 {
+	if len(m.Payload.SHA256) != sha256HexLen {
 		return fmt.Errorf("payload.sha256 must be a hex sha256 digest")
 	}
 	switch m.Payload.Compression {

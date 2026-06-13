@@ -37,9 +37,9 @@ func TestCommitHealthGateFail(t *testing.T) {
 	e.SaveState(swappedState())
 
 	err := e.Commit()
-	var hc *HealthCheckError
+	var hc *HookError
 	if !errors.As(err, &hc) {
-		t.Fatalf("want HealthCheckError, got %v", err)
+		t.Fatalf("want HookError, got %v", err)
 	}
 	// deployment marked failed (a reboot rolls back), MarkGood NOT called,
 	// state retained.

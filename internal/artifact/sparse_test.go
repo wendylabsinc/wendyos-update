@@ -38,14 +38,14 @@ func buildSparse(t *testing.T, blkSz uint32, rawBlk, fillPattern []byte) ([]byte
 	// RAW chunk
 	w(uint16(chunkRaw))
 	w(uint16(0))
-	w(uint32(1))            // blks
-	w(uint32(12 + blkSz))   // total_sz
+	w(uint32(1))          // blks
+	w(uint32(12 + blkSz)) // total_sz
 	b.Write(rawBlk)
 
 	// DONTCARE chunk
 	w(uint16(chunkDontCare))
 	w(uint16(0))
-	w(uint32(1)) // blks
+	w(uint32(1))  // blks
 	w(uint32(12)) // total_sz (no payload)
 
 	// FILL chunk

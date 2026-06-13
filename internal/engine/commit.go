@@ -61,6 +61,7 @@ func (e *Engine) Commit() error {
 	if err != nil {
 		return err
 	}
+	env := e.hookEnv(st.ArtifactName, st.ArtifactVersion, connector.Slot(st.TargetSlot), cur, st.BootloaderUpdate)
 	if int(cur) != st.TargetSlot {
 		// The firmware fell back to the old slot — the new one never
 		// produced a healthy boot.
@@ -68,6 +69,7 @@ func (e *Engine) Commit() error {
 		if serr := e.SaveState(st); serr != nil {
 			return serr
 		}
+		e.runAdvisoryHooks(HookOnFailure, env)
 		return &PlatformVerifyError{Err: fmt.Errorf("running slot %s but the update targeted slot %d (firmware fallback)", cur, st.TargetSlot)}
 	}
 	slog.Info("commit: running expected slot", "slot", cur.String())
@@ -77,6 +79,7 @@ func (e *Engine) Commit() error {
 		if serr := e.SaveState(st); serr != nil {
 			return serr
 		}
+		e.runAdvisoryHooks(HookOnFailure, env)
 		return &PlatformVerifyError{Err: err}
 	}
 
@@ -84,11 +87,12 @@ func (e *Engine) Commit() error {
 	// /etc/wendy-update/health.d/. The firmware checks above are the
 	// baseline; these add product checks. A failure marks the deployment
 	// failed (like a platform-verify failure) so a reboot rolls back.
-	if err := e.runHealthChecks(); err != nil {
+	if err := e.runHooks(HookHealth, env); err != nil {
 		st.Phase = PhaseFailed
 		if serr := e.SaveState(st); serr != nil {
 			return serr
 		}
+		e.runAdvisoryHooks(HookOnFailure, env)
 		return err
 	}
 
@@ -113,6 +117,9 @@ func (e *Engine) Commit() error {
 	}); err != nil {
 		slog.Warn("could not record install history", "err", err)
 	}
+	// post-commit hook: the update is finalized; failures here are advisory
+	// (too late to undo a committed update) — products notify cloud, etc.
+	e.runAdvisoryHooks(HookPostCommit, env)
 	slog.Info("commit: done", "artifact", st.ArtifactName, "slot", connector.Slot(st.TargetSlot).String())
 	return nil
 }
@@ -133,13 +140,13 @@ type RollbackResult struct {
 //     chain coupling means a processed bootloader capsule is also rolled
 //     back (the origin chain still carries the old bootloader). Reboot
 //     required.
-func (e *Engine) Rollback() error {
+func (e *Engine) Rollback() (*RollbackResult, error) {
 	st, err := e.LoadState()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if st == nil {
-		return fmt.Errorf("nothing to roll back")
+		return nil, fmt.Errorf("nothing to roll back")
 	}
 
 	target := connector.Slot(st.TargetSlot)
@@ -147,47 +154,34 @@ func (e *Engine) Rollback() error {
 
 	cur, err := e.Conn.CurrentSlot()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	slog.Info("rollback: reverting pending update",
 		"artifact", st.ArtifactName, "from", target.String(), "to", origin.String())
 
 	if cur == origin {
-		// Pre-reboot rollback: a staged-but-unprocessed platform update
-		// must be disarmed before re-pointing the slot.
+		// Pre-reboot rollback: disarm a staged-but-unprocessed platform
+		// update before re-pointing the slot (no-op when nothing is staged).
 		if err := e.Conn.AbortPlatformUpdate(); err != nil {
-			return err
+			return nil, err
 		}
-		slog.Info("rollback: unstaged pending platform update")
+		slog.Info("rollback: disarmed any staged platform update")
 	}
 	if err := e.Conn.SwapSlot(origin, false); err != nil {
-		return err
+		return nil, err
 	}
 	if err := e.ClearState(); err != nil {
-		return err
+		return nil, err
 	}
 
 	res := &RollbackResult{OriginSlot: origin, RebootRequired: cur == target}
-	line, _ := json.Marshal(map[string]any{
-		"phase":           "rollback",
-		"origin_slot":     res.OriginSlot.String(),
-		"reboot_required": res.RebootRequired,
-	})
-	e.emitRaw(string(line))
 	if res.RebootRequired {
-		slog.Info("rolled back — reboot to return to the previous system", "slot", origin.String())
+		slog.Info("rolled back — reboot to return to the previous system",
+			"origin_slot", origin.String(), "reboot_required", true)
 	} else {
-		slog.Info("rolled back", "slot", origin.String())
+		slog.Info("rolled back", "origin_slot", origin.String(), "reboot_required", false)
 	}
-	return nil
-}
-
-// emitRaw lets lifecycle verbs reuse the CLI's stdout JSON channel
-// without knowing about it.
-func (e *Engine) emitRaw(line string) {
-	if e.Progress != nil {
-		fmt.Println(line)
-	}
+	return res, nil
 }
 
 // VerifyBoot is the boot-time verifier behind wendy-update-verify.service
@@ -219,7 +213,12 @@ func (e *Engine) VerifyBoot() error {
 	if failed {
 		slog.Warn("boot verifier: marking pending deployment failed", "artifact", st.ArtifactName)
 		st.Phase = PhaseFailed
-		return e.SaveState(st)
+		if serr := e.SaveState(st); serr != nil {
+			return serr
+		}
+		cur, _ := e.Conn.CurrentSlot() // best-effort, for hook context only
+		e.runAdvisoryHooks(HookOnFailure, e.hookEnv(st.ArtifactName, st.ArtifactVersion, connector.Slot(st.TargetSlot), cur, st.BootloaderUpdate))
+		return nil
 	}
 	slog.Info("boot verifier: pending update looks healthy", "artifact", st.ArtifactName)
 	return nil
