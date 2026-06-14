@@ -115,7 +115,8 @@ func main() {
 	case "rollback":
 		err = cmdRollback()
 	case "status":
-		err = cmdStatus(len(os.Args) > 2 && os.Args[2] == "--json")
+		statusArgs := os.Args[2:]
+		err = cmdStatus(hasFlag(statusArgs, "--json"), hasFlag(statusArgs, "--verbose") || hasFlag(statusArgs, "-v"))
 	case "mark-good":
 		err = cmdMarkGood()
 	case "pack":
@@ -151,7 +152,8 @@ usage:
   wendyos-update install <url|path>   install a .wendy artifact (no reboot)
   wendyos-update commit               finalize after reboot (exit 2 = nothing to commit)
   wendyos-update rollback             swap back an uncommitted update
-  wendyos-update status [--json]      current slot / pending state
+  wendyos-update status [--json] [--verbose]
+                                      current slot / pending state (--verbose adds a raw slot/EFI-var snapshot)
   wendyos-update mark-good            reset slot health, clear pending state
   wendyos-update pack <flags>         build a .wendy artifact from a rootfs image (host-side)`)
 }
@@ -292,12 +294,23 @@ func cmdInstall(ctx context.Context, src string) error {
 	return nil
 }
 
-func cmdStatus(asJSON bool) error {
+// hasFlag reports whether name appears in args (order-independent flag
+// parsing for the simple flag-only verbs).
+func hasFlag(args []string, name string) bool {
+	for _, a := range args {
+		if a == name {
+			return true
+		}
+	}
+	return false
+}
+
+func cmdStatus(asJSON, verbose bool) error {
 	eng, err := newEngine()
 	if err != nil {
 		return err
 	}
-	info, err := eng.Status()
+	info, err := eng.Status(verbose)
 	if err != nil {
 		return err
 	}

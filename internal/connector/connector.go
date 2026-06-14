@@ -91,7 +91,10 @@ type Connector interface {
 
 	// Diagnostics returns board-specific, human-facing status detail for
 	// the `status` verb (slot numbers, firmware versions, relevant
-	// variables). Best-effort and display-only: never required for
-	// operation, and unreadable items are simply omitted. May return nil.
-	Diagnostics() map[string]string
+	// variables). When verbose is set, it adds a fuller raw snapshot of
+	// the slot/EFI-variable state for debugging (raw status bytes, per-slot
+	// bootloader state, boot-chain variables). Best-effort and display-only:
+	// never required for operation, and unreadable items are simply
+	// omitted. May return nil.
+	Diagnostics(verbose bool) map[string]string
 }

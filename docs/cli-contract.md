@@ -10,7 +10,7 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 | `install <url\|path>` | Full install of a `.wendy` artifact up to "reboot required": validate → write inactive slot → set pending state → prepare target slot → flip (or stage capsule) | **No** — caller reboots |
 | `commit` | Verify the running slot is the expected one, run platform verification (capsule cascade if applicable), finalize, clear pending state | No |
 | `rollback` | Explicit flip-back of an uncommitted update | No |
-| `status [--json]` | Current slot, pending state, plus a board `diagnostics` map (rootfs/bootloader slot + version, ESRT capsule status/version, per-slot rootfs health). Best-effort/display-only. | No |
+| `status [--json] [--verbose]` | Current slot, pending state, plus a board `diagnostics` map (rootfs/bootloader slot + version, ESRT capsule status/version, per-slot rootfs health). `--verbose` adds a raw slot/EFI-variable snapshot for debugging (raw `RootfsStatusSlot` bytes, per-slot bootloader state, `BootChainFw*`, `OsIndications`). Best-effort/display-only. | No |
 | `mark-good` | Manual escape hatch: reset slot health vars, clear pending state | No |
 | `pack <flags>` | Host-side: build a `.wendy` artifact from a rootfs image (`--image --name --version --device... -o`); self-verifies by re-reading the output unless `--no-verify` | n/a |
 
@@ -37,12 +37,16 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
     (carriage-return updated).
   - **under systemd** (detected via `$JOURNAL_STREAM`): plain lines carrying
     sd-daemon `<N>` severity prefixes (`<3>` err, `<4>` warning, `<6>` info,
-    `<7>` debug) that journald parses into PRIORITY; progress becomes
-    discrete throttled lines (no carriage returns). systemd captures the
+    `<7>` debug) that journald parses into PRIORITY. systemd captures the
     service's stderr into the journal automatically — no socket wiring.
   - **piped/redirected**: plain timestamped lines.
+  - The progress bar is interactive-only: in non-TTY modes (journal, piped)
+    it is omitted entirely — the phase transitions are already logged as
+    step lines (`downloading`, write throughput, `verify`…), so per-percent
+    updates would just be journal noise.
   - Every line is tagged `wendyos-update:`. `WENDY_DEBUG=1` enables debug
-    records; `NO_COLOR` disables color.
+    records (per-hook discovery/env/timing live here); `NO_COLOR` disables
+    color.
 
 ## Paths
 

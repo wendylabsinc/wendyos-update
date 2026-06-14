@@ -9,6 +9,8 @@ package engine
 // products gate on local app/service readiness, not connectivity.
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -16,6 +18,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/wendylabsinc/wendy-os-update/internal/connector"
 )
@@ -85,19 +89,89 @@ func (e *Engine) runHooks(phase string, env []string) error {
 	}
 	sort.Strings(names)
 
+	if len(names) == 0 {
+		slog.Debug("no hooks", "phase", phase, "dir", dir)
+		return nil
+	}
+
 	hookEnv := append([]string{"WENDY_PHASE=" + phase}, env...)
+	slog.Debug("hooks discovered", "phase", phase, "dir", dir,
+		"count", len(names), "hooks", strings.Join(names, ","))
+	slog.Debug("hook environment", "phase", phase, "env", strings.Join(hookEnv, " "))
+
 	for _, name := range names {
 		path := filepath.Join(dir, name)
 		slog.Info("running hook", "phase", phase, "hook", name)
 		cmd := exec.Command(path)
-		cmd.Stdout = os.Stderr // hook output is human-facing
-		cmd.Stderr = os.Stderr
+		// Tag the hook's own stdout/stderr with hook[<name>] and route it
+		// through slog so it carries our journal severity prefix and is
+		// greppable alongside the tool's output. Passing the SAME writer to
+		// both streams makes os/exec serialize the two pipes' writes.
+		hw := &hookLogWriter{name: name}
+		cmd.Stdout = hw
+		cmd.Stderr = hw
 		cmd.Env = append(os.Environ(), hookEnv...)
-		if err := cmd.Run(); err != nil {
+		start := time.Now()
+		err := cmd.Run()
+		hw.flush()
+		dur := time.Since(start).Round(time.Millisecond)
+		if err != nil {
+			slog.Error("hook failed", "phase", phase, "hook", name,
+				"exit_code", exitCodeOf(err), "duration", dur, "err", err)
 			return &HookError{Phase: phase, Hook: name, Err: err}
 		}
+		slog.Info("hook ok", "phase", phase, "hook", name, "duration", dur)
 	}
 	return nil
+}
+
+// exitCodeOf extracts the process exit code from a hook run error, or -1
+// when the failure was not a non-zero exit (e.g. the binary could not be
+// started — missing interpreter, not executable, permission denied).
+func exitCodeOf(err error) int {
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode()
+	}
+	return -1
+}
+
+// hookLogWriter buffers a hook's output and emits each complete line through
+// slog tagged with hook[<name>], so hook output is attributable and carries
+// the same journal severity/prefix as the tool's own logs. Partial trailing
+// output is held until the next newline or a final flush(); empty lines are
+// dropped to keep the journal clean.
+type hookLogWriter struct {
+	name string
+	buf  []byte
+}
+
+func (w *hookLogWriter) Write(p []byte) (int, error) {
+	w.buf = append(w.buf, p...)
+	for {
+		i := bytes.IndexByte(w.buf, '\n')
+		if i < 0 {
+			break
+		}
+		w.emit(string(w.buf[:i]))
+		w.buf = w.buf[i+1:]
+	}
+	return len(p), nil
+}
+
+func (w *hookLogWriter) flush() {
+	if len(w.buf) > 0 {
+		w.emit(string(w.buf))
+		w.buf = nil
+	}
+}
+
+func (w *hookLogWriter) emit(line string) {
+	line = strings.TrimRight(line, "\r")
+	if line == "" {
+		return
+	}
+	slog.Info(fmt.Sprintf("hook[%s] %s", w.name, line))
 }
 
 // runAdvisoryHooks runs a non-gating phase: a failure is logged, never

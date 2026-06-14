@@ -221,7 +221,7 @@ type StatusInfo struct {
 	Diagnostics map[string]string `json:"diagnostics,omitempty"`
 }
 
-func (e *Engine) Status() (*StatusInfo, error) {
+func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
 	cur, err := e.Conn.CurrentSlot()
 	if err != nil {
 		return nil, err
@@ -234,7 +234,7 @@ func (e *Engine) Status() (*StatusInfo, error) {
 		Connector:   e.Conn.Name(),
 		CurrentSlot: cur.String(),
 		Pending:     st,
-		Diagnostics: e.Conn.Diagnostics(),
+		Diagnostics: e.Conn.Diagnostics(verbose),
 	}, nil
 }
 

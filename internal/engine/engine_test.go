@@ -54,11 +54,11 @@ func (f *fakeConn) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error {
 	f.swapStage = append(f.swapStage, stagePlatformUpdate)
 	return nil
 }
-func (f *fakeConn) BootIsCompromised() (bool, error)         { return f.compromised, nil }
-func (f *fakeConn) VerifyPlatformUpdate(blUpdate bool) error { return f.verifyErr }
-func (f *fakeConn) AbortPlatformUpdate() error               { f.aborted++; return nil }
-func (f *fakeConn) MarkGood() error                          { f.markGood++; return nil }
-func (f *fakeConn) Diagnostics() map[string]string           { return nil }
+func (f *fakeConn) BootIsCompromised() (bool, error)           { return f.compromised, nil }
+func (f *fakeConn) VerifyPlatformUpdate(blUpdate bool) error   { return f.verifyErr }
+func (f *fakeConn) AbortPlatformUpdate() error                 { f.aborted++; return nil }
+func (f *fakeConn) MarkGood() error                            { f.markGood++; return nil }
+func (f *fakeConn) Diagnostics(verbose bool) map[string]string { return nil }
 
 // --- artifact builder ---
 
@@ -272,7 +272,7 @@ func TestMarkGoodClearsState(t *testing.T) {
 func TestStatus(t *testing.T) {
 	f := &fakeConn{cur: connector.SlotB}
 	e := testEngine(t, f)
-	info, err := e.Status()
+	info, err := e.Status(false)
 	if err != nil {
 		t.Fatal(err)
 	}

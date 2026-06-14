@@ -38,23 +38,26 @@ func TestJournalSeverityPrefix(t *testing.T) {
 	}
 }
 
-func TestJournalNoCarriageReturns(t *testing.T) {
-	// Progress in journal mode must be discrete lines, never \r bars.
+func TestJournalProgressIsSuppressed(t *testing.T) {
+	// The progress bar is interactive-only: in journal mode Progress is a
+	// no-op (the journal gets the phase-transition log lines instead, not
+	// per-percent noise, and never a \r bar).
 	l, _, buf := newCaptured(ModeJournal)
 	for pct := 0; pct <= 100; pct += 5 {
 		l.Progress("write", pct)
 	}
-	out := buf.String()
-	if strings.ContainsRune(out, '\r') {
-		t.Fatalf("journal progress contains a carriage return:\n%q", out)
+	if out := buf.String(); out != "" {
+		t.Fatalf("journal progress should emit nothing, got:\n%q", out)
 	}
-	// Throttled to ~every 10% plus the final 100%, not every 5% tick.
-	got := strings.Count(out, "\n")
-	if got > 12 || got < 3 {
-		t.Fatalf("expected throttled progress lines, got %d:\n%s", got, out)
-	}
-	if !strings.Contains(out, "<6>wendyos-update: write 100%") {
-		t.Errorf("missing terminal 100%% line:\n%s", out)
+}
+
+func TestPlainProgressIsSuppressed(t *testing.T) {
+	// Same for piped/redirected output.
+	l, _, buf := newCaptured(ModePlain)
+	l.Progress("write", 50)
+	l.Progress("write", 100)
+	if out := buf.String(); out != "" {
+		t.Fatalf("plain progress should emit nothing, got:\n%q", out)
 	}
 }
 

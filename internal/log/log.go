@@ -85,19 +85,14 @@ type Logger struct {
 
 	mu        sync.Mutex
 	barActive bool // an unterminated \r progress line is on screen
-
-	// discrete-progress throttle (non-TTY modes)
-	lastPhase string
-	lastPct   int
 }
 
 // New builds a Logger writing to w in the given mode.
 func New(w io.Writer, mode Mode) *Logger {
 	return &Logger{
-		w:       w,
-		mode:    mode,
-		debug:   os.Getenv("WENDY_DEBUG") != "",
-		lastPct: -2,
+		w:     w,
+		mode:  mode,
+		debug: os.Getenv("WENDY_DEBUG") != "",
 	}
 }
 
@@ -154,29 +149,18 @@ func (l *Logger) clearBarLocked() {
 const barWidth = 30
 
 // Progress renders a coarse install progress update. percent < 0 means
-// indeterminate. In TTY mode it draws an in-place bar; otherwise it emits
-// throttled discrete lines (on phase change, every ~10%, and at the end).
+// indeterminate. The in-place bar is an interactive nicety, so it is drawn
+// ONLY on a TTY. Under journald or when piped/redirected, per-percent
+// updates are noise — the phase transitions are already logged (downloading
+// / writing / verifying) and install emits a write-throughput line — so
+// Progress is a no-op there.
 func (l *Logger) Progress(phase string, percent int) {
+	if l.mode != ModeTTY {
+		return
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-
-	if l.mode == ModeTTY {
-		l.renderBarLocked(phase, percent)
-		return
-	}
-
-	// Discrete + throttled: skip same-phase updates that have not moved
-	// at least 10 percentage points and are not the terminal 100%.
-	if phase == l.lastPhase && percent >= 0 && percent != 100 && percent < l.lastPct+10 {
-		return
-	}
-	l.lastPhase = phase
-	l.lastPct = percent
-	if percent < 0 {
-		l.writeLineLocked(slog.LevelInfo, phase+"…")
-	} else {
-		l.writeLineLocked(slog.LevelInfo, fmt.Sprintf("%s %d%%", phase, percent))
-	}
+	l.renderBarLocked(phase, percent)
 }
 
 func (l *Logger) renderBarLocked(phase string, percent int) {
