@@ -1,5 +1,5 @@
 // Package connector defines the board abstraction that makes
-// wendy-update generic: supporting a new board means implementing
+// wendyos-update generic: supporting a new board means implementing
 // this interface and registering it — nothing in the engine, CLI,
 // artifact format, or state machine changes per board.
 //
@@ -88,4 +88,10 @@ type Connector interface {
 	// bookkeeping and makes the now-inactive slot a valid rollback
 	// target.
 	MarkGood() error
+
+	// Diagnostics returns board-specific, human-facing status detail for
+	// the `status` verb (slot numbers, firmware versions, relevant
+	// variables). Best-effort and display-only: never required for
+	// operation, and unreadable items are simply omitted. May return nil.
+	Diagnostics() map[string]string
 }

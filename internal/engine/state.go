@@ -1,12 +1,12 @@
 // Package engine sequences updates and owns the persistent state under
-// /data/wendy-update/ (schema: docs/state-schema.md, v1 frozen).
+// /data/wendyos-update/ (schema: docs/state-schema.md, v1 frozen).
 // One JSON file, atomic replace (write tmp + rename) — no database.
 package engine
 
 import "time"
 
 // StateDir is the persistent state location (on the 'data' partition).
-const StateDir = "/data/wendy-update"
+const StateDir = "/data/wendyos-update"
 
 // Phase of a pending update.
 type Phase string

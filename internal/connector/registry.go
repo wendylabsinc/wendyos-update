@@ -24,7 +24,7 @@ func Register(name string, f Factory) {
 }
 
 // Select resolves a connector. Order (docs/connector-architecture.md):
-//  1. explicit name (from /etc/wendy-update/config.json) — must exist
+//  1. explicit name (from /etc/wendyos-update/config.json) — must exist
 //  2. auto-detect across registered connectors — exactly one must match
 //  3. otherwise a hard error: never guess on an OTA path.
 func Select(explicit string) (Connector, error) {
@@ -46,10 +46,10 @@ func Select(explicit string) (Connector, error) {
 	case 1:
 		return registry[matches[0]].New(), nil
 	case 0:
-		return nil, fmt.Errorf("no connector detected this platform (have: %v); set one in /etc/wendy-update/config.json", names())
+		return nil, fmt.Errorf("no connector detected this platform (have: %v); set one in /etc/wendyos-update/config.json", names())
 	default:
 		sort.Strings(matches)
-		return nil, fmt.Errorf("ambiguous platform: connectors %v all match; set one in /etc/wendy-update/config.json", matches)
+		return nil, fmt.Errorf("ambiguous platform: connectors %v all match; set one in /etc/wendyos-update/config.json", matches)
 	}
 }
 

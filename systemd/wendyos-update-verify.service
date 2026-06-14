@@ -1,16 +1,16 @@
 [Unit]
-Description=wendy-update boot verifier (slot health / double-boot check)
+Description=wendyos-update boot verifier (slot health / double-boot check)
 DefaultDependencies=no
 # Runs early, before the commit unit and before services that depend on a
 # committed system. Replaces the mender-update-verifier + nv_update_verifier
 # pending-update arm (see meta-edgeos/docs/docs-ext/mender-implementation.md §7).
 After=local-fs.target data.mount
-Before=wendy-update-commit.service
+Before=wendyos-update-commit.service
 
 [Service]
 Type=oneshot
 # Internal verb (not in the public CLI contract); best-effort, exits 0.
-ExecStart=/usr/bin/wendy-update verify-boot
+ExecStart=/usr/bin/wendyos-update verify-boot
 RemainAfterExit=yes
 
 [Install]

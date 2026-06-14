@@ -58,6 +58,7 @@ func (f *fakeConn) BootIsCompromised() (bool, error)         { return f.compromi
 func (f *fakeConn) VerifyPlatformUpdate(blUpdate bool) error { return f.verifyErr }
 func (f *fakeConn) AbortPlatformUpdate() error               { f.aborted++; return nil }
 func (f *fakeConn) MarkGood() error                          { f.markGood++; return nil }
+func (f *fakeConn) Diagnostics() map[string]string           { return nil }
 
 // --- artifact builder ---
 

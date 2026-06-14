@@ -215,9 +215,10 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 
 // StatusInfo is the `status` verb output (docs/cli-contract.md).
 type StatusInfo struct {
-	Connector   string `json:"connector"`
-	CurrentSlot string `json:"current_slot"`
-	Pending     *State `json:"pending,omitempty"`
+	Connector   string            `json:"connector"`
+	CurrentSlot string            `json:"current_slot"`
+	Pending     *State            `json:"pending,omitempty"`
+	Diagnostics map[string]string `json:"diagnostics,omitempty"`
 }
 
 func (e *Engine) Status() (*StatusInfo, error) {
@@ -233,6 +234,7 @@ func (e *Engine) Status() (*StatusInfo, error) {
 		Connector:   e.Conn.Name(),
 		CurrentSlot: cur.String(),
 		Pending:     st,
+		Diagnostics: e.Conn.Diagnostics(),
 	}, nil
 }
 

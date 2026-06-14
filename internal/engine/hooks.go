@@ -21,7 +21,7 @@ import (
 )
 
 // DefaultHooksDir is the root holding the per-phase hook directories.
-const DefaultHooksDir = "/etc/wendy-update"
+const DefaultHooksDir = "/etc/wendyos-update"
 
 // Hook phases. The directory for a phase is <HooksDir>/<phase>.d.
 const (
@@ -32,7 +32,7 @@ const (
 	HookOnFailure   = "on-failure"   // a deployment was marked failed; advisory
 )
 
-// HookError reports a failing hook in a gating phase. cmd/wendy-update maps
+// HookError reports a failing hook in a gating phase. cmd/wendyos-update maps
 // it to an exit code (health -> 4, other gating phases -> 1).
 type HookError struct {
 	Phase string

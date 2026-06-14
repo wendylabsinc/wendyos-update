@@ -1,6 +1,6 @@
 package main
 
-// `wendy-update pack` — build a .wendy artifact from a rootfs image.
+// `wendyos-update pack` — build a .wendy artifact from a rootfs image.
 // Host-side verb (build machines / CI / the future image bbclass via a
 // -native recipe); it does not touch device state.
 
@@ -30,7 +30,7 @@ func cmdPack(args []string) error {
 		version     = fs.String("version", "", "artifact version (e.g. 0.16.0)")
 		compression = fs.String("compression", "zstd", "payload compression: zstd|gzip|none")
 		blUpdate    = fs.Bool("bootloader-update", false, "informational flag (the rootfs marker decides at install time)")
-		minTool     = fs.String("min-tool-version", "", "minimum wendy-update version able to install this artifact")
+		minTool     = fs.String("min-tool-version", "", "minimum wendyos-update version able to install this artifact")
 		output      = fs.String("o", "", "output .wendy path")
 		noVerify    = fs.Bool("no-verify", false, "skip the read-back verification pass")
 		devices     stringList
@@ -73,7 +73,7 @@ func cmdPack(args []string) error {
 		}
 	}
 
-	fmt.Fprintf(os.Stderr, "wendy-update: packed %s (%s, payload %d bytes, %s)\n",
+	fmt.Fprintf(os.Stderr, "wendyos-update: packed %s (%s, payload %d bytes, %s)\n",
 		*output, m.ArtifactName, m.Payload.Size, m.Payload.Compression)
 	return nil
 }

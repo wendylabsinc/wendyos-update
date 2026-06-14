@@ -84,7 +84,7 @@ func (e *Engine) Commit() error {
 	}
 
 	// Userspace health gate (product-defined, network-independent):
-	// /etc/wendy-update/health.d/. The firmware checks above are the
+	// /etc/wendyos-update/health.d/. The firmware checks above are the
 	// baseline; these add product checks. A failure marks the deployment
 	// failed (like a platform-verify failure) so a reboot rolls back.
 	if err := e.runHooks(HookHealth, env); err != nil {
@@ -184,7 +184,7 @@ func (e *Engine) Rollback() (*RollbackResult, error) {
 	return res, nil
 }
 
-// VerifyBoot is the boot-time verifier behind wendy-update-verify.service
+// VerifyBoot is the boot-time verifier behind wendyos-update-verify.service
 // (internal verb, not part of the public CLI contract). If an update is
 // pending and the platform flagged the boot — or we are not running the
 // slot the update targeted — the deployment is marked failed so the

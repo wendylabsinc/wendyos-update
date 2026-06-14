@@ -1,21 +1,21 @@
 [Unit]
-Description=wendy-update auto-commit (finalize a pending update after a healthy boot)
+Description=wendyos-update auto-commit (finalize a pending update after a healthy boot)
 # Network-independent gate. Order after the verifier (firmware slot
 # health + double-boot) and /data (where the pending state lives), NOT
 # after multi-user.target — that pulls in network-online (radvd,
 # agent-updater) and would block commit on the network coming up. The
 # userspace health policy lives in the commit verb's health.d hooks
-# (/etc/wendy-update/health.d/), which products extend; with no hooks the
+# (/etc/wendyos-update/health.d/), which products extend; with no hooks the
 # firmware-level verify is the baseline gate.
-After=wendy-update-verify.service data.mount
-Wants=wendy-update-verify.service
+After=wendyos-update-verify.service data.mount
+Wants=wendyos-update-verify.service
 # Reaching boot-complete.target means the running slot was committed.
-Before=wendy-update-boot-complete.target
+Before=wendyos-update-boot-complete.target
 
 [Service]
 Type=oneshot
 # Exit 2 = nothing to commit — a success for this unit.
-ExecStart=/usr/bin/wendy-update commit
+ExecStart=/usr/bin/wendyos-update commit
 SuccessExitStatus=2
 RemainAfterExit=yes
 

@@ -142,7 +142,7 @@ func (c *Controller) recordBootAttempt(s connector.Slot) error {
 // blVersionBeforePath: pre-update bootloader version
 // (docs/state-schema.md: transient, capsule updates only).
 func (c *Controller) blVersionBeforePath() string {
-	return c.RootDir + "/data/wendy-update/bl-version-before"
+	return c.RootDir + "/data/wendyos-update/bl-version-before"
 }
 
 // bootloaderVersion parses "Current version: X" from the BOOTLOADER
@@ -164,7 +164,7 @@ func (c *Controller) bootloaderVersion() (string, error) {
 }
 
 // espMountpoint returns where the ESP is mounted, mounting it at
-// /run/wendy-update/esp if necessary (switch-rootfs behavior:
+// /run/wendyos-update/esp if necessary (switch-rootfs behavior:
 // findmnt /boot/efi, else mount by-partlabel).
 func (c *Controller) espMountpoint() (string, error) {
 	if out, err := runCmd("findmnt", "-no", "TARGET", "/boot/efi"); err == nil {
@@ -216,7 +216,7 @@ func copyFileSync(src, dst string) error {
 // defaultMount mounts dev read-only (ext4 rootfs) under /run and
 // returns the dir plus an unmount func.
 func defaultMount(dev string) (string, func(), error) {
-	dir, err := os.MkdirTemp("/run", "wendy-update-slot-*")
+	dir, err := os.MkdirTemp("/run", "wendyos-update-slot-*")
 	if err != nil {
 		return "", nil, err
 	}
@@ -233,7 +233,7 @@ func defaultMount(dev string) (string, func(), error) {
 
 // mountVfat mounts the ESP read-write.
 func (c *Controller) mountVfat(dev string) (string, func(), error) {
-	dir := "/run/wendy-update/esp"
+	dir := "/run/wendyos-update/esp"
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, err
 	}

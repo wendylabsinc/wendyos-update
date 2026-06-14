@@ -27,9 +27,9 @@ func TestJournalSeverityPrefix(t *testing.T) {
 		t.Fatalf("want 3 lines, got %d: %q", len(lines), out)
 	}
 	want := []string{
-		"<6>wendy-update: writing slot dev=/dev/nvme0n1p2",
-		"<4>wendy-update: ESRT not readable",
-		"<3>wendy-update: commit failed",
+		"<6>wendyos-update: writing slot dev=/dev/nvme0n1p2",
+		"<4>wendyos-update: ESRT not readable",
+		"<3>wendyos-update: commit failed",
 	}
 	for i, w := range want {
 		if lines[i] != w {
@@ -53,7 +53,7 @@ func TestJournalNoCarriageReturns(t *testing.T) {
 	if got > 12 || got < 3 {
 		t.Fatalf("expected throttled progress lines, got %d:\n%s", got, out)
 	}
-	if !strings.Contains(out, "<6>wendy-update: write 100%") {
+	if !strings.Contains(out, "<6>wendyos-update: write 100%") {
 		t.Errorf("missing terminal 100%% line:\n%s", out)
 	}
 }
@@ -93,7 +93,7 @@ func TestPlainModeHasLevelNoPrefix(t *testing.T) {
 	if strings.HasPrefix(out, "<") {
 		t.Errorf("plain mode must not emit sd-daemon prefix:\n%q", out)
 	}
-	if !strings.Contains(out, "INFO") || !strings.Contains(out, "wendy-update: hello") {
+	if !strings.Contains(out, "INFO") || !strings.Contains(out, "wendyos-update: hello") {
 		t.Errorf("plain line missing level or message:\n%q", out)
 	}
 }

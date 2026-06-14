@@ -1,4 +1,4 @@
-// Package log is wendy-update's output layer. It renders structured
+// Package log is wendyos-update's output layer. It renders structured
 // slog records and coarse install progress to a single writer (stderr),
 // adapting the format to where the tool is running:
 //
@@ -50,9 +50,9 @@ const (
 	ModeJournal
 )
 
-// msgPrefix tags every line so wendy-update's output is greppable when
+// msgPrefix tags every line so wendyos-update's output is greppable when
 // interleaved with other services in the journal.
-const msgPrefix = "wendy-update: "
+const msgPrefix = "wendyos-update: "
 
 // IsTTY reports whether f is a terminal.
 func IsTTY(f *os.File) bool {

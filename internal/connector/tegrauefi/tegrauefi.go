@@ -225,7 +225,7 @@ func (c *Controller) statusVar(s connector.Slot) string {
 // stateDir is this connector's private bookkeeping location
 // (docs/connector-architecture.md rule 2: engine state is off-limits).
 func (c *Controller) stateDir() string {
-	return c.RootDir + "/data/wendy-update/connector/tegrauefi"
+	return c.RootDir + "/data/wendyos-update/connector/tegrauefi"
 }
 
 // bootAttemptedPath records which slot the last (uncommitted) boot

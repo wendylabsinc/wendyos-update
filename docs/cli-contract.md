@@ -1,4 +1,4 @@
-# wendy-update CLI contract (v1 — frozen)
+# wendyos-update CLI contract (v1 — frozen)
 
 This contract is the integration surface for callers (humans, scripts, and
 later the wendy-agent wrapper). Changes after v1 are additive only.
@@ -10,7 +10,7 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 | `install <url\|path>` | Full install of a `.wendy` artifact up to "reboot required": validate → write inactive slot → set pending state → prepare target slot → flip (or stage capsule) | **No** — caller reboots |
 | `commit` | Verify the running slot is the expected one, run platform verification (capsule cascade if applicable), finalize, clear pending state | No |
 | `rollback` | Explicit flip-back of an uncommitted update | No |
-| `status [--json]` | Current slot, partitions, installed artifact name/version, pending state, last error | No |
+| `status [--json]` | Current slot, pending state, plus a board `diagnostics` map (rootfs/bootloader slot + version, ESRT capsule status/version, per-slot rootfs health). Best-effort/display-only. | No |
 | `mark-good` | Manual escape hatch: reset slot health vars, clear pending state | No |
 | `pack <flags>` | Host-side: build a `.wendy` artifact from a rootfs image (`--image --name --version --device... -o`); self-verifies by re-reading the output unless `--no-verify` | n/a |
 
@@ -41,15 +41,15 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
     discrete throttled lines (no carriage returns). systemd captures the
     service's stderr into the journal automatically — no socket wiring.
   - **piped/redirected**: plain timestamped lines.
-  - Every line is tagged `wendy-update:`. `WENDY_DEBUG=1` enables debug
+  - Every line is tagged `wendyos-update:`. `WENDY_DEBUG=1` enables debug
     records; `NO_COLOR` disables color.
 
 ## Paths
 
-- State: `/data/wendy-update/` (see `state-schema.md`)
-- Config: `/etc/wendy-update/config.json` (backend selection override,
+- State: `/data/wendyos-update/` (see `state-schema.md`)
+- Config: `/etc/wendyos-update/config.json` (backend selection override,
   partition map if not autodetected)
-- Lifecycle hooks: `/etc/wendy-update/<phase>.d/` — products drop
+- Lifecycle hooks: `/etc/wendyos-update/<phase>.d/` — products drop
   executables that run in lexical order at fixed points in the update
   sequence. Empty/absent dir = no hooks. Network-independent by design
   (gate on local app/service readiness, not connectivity). Each hook
@@ -66,16 +66,16 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
   | `on-failure.d/` | when a deployment is marked failed (boot-verify fallback, or a commit/health/platform failure) | advisory — logged, never fatal |
 
   The health phase honours a legacy `health_dir` config override; all
-  phases otherwise live under `hooks_dir` (default `/etc/wendy-update`).
+  phases otherwise live under `hooks_dir` (default `/etc/wendyos-update`).
 
 ## systemd units (shipped with the tool)
 
-- `wendy-update-verify.service` — early boot, before the commit unit:
+- `wendyos-update-verify.service` — early boot, before the commit unit:
   checks slot-health efivars + double-boot detection; marks a pending
   deployment failed if the platform flagged the boot.
-- `wendy-update-commit.service` — oneshot, ordered after
-  `wendy-update-verify.service` + `data.mount` (NOT `multi-user.target`,
-  to stay network-independent); runs `wendy-update commit`, which applies
-  the health.d gate. `Before=wendy-update-boot-complete.target`.
-- `wendy-update-boot-complete.target` — passive milestone reached once the
+- `wendyos-update-commit.service` — oneshot, ordered after
+  `wendyos-update-verify.service` + `data.mount` (NOT `multi-user.target`,
+  to stay network-independent); runs `wendyos-update commit`, which applies
+  the health.d gate. `Before=wendyos-update-boot-complete.target`.
+- `wendyos-update-boot-complete.target` — passive milestone reached once the
   running slot has been committed; downstream units may order after it.

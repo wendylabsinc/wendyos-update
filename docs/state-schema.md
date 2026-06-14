@@ -1,11 +1,11 @@
 # On-device state (v1 — frozen)
 
-Everything lives under `/data/wendy-update/` (the persistent `data`
+Everything lives under `/data/wendyos-update/` (the persistent `data`
 partition, GPT id 17 on Tegra). One JSON state file, transitions are
 atomic file replaces (write tmp + rename). No database.
 
 ```
-/data/wendy-update/
+/data/wendyos-update/
 ├── state.json        # pending-update record (absent = no update in flight)
 ├── installed.json    # committed artifact history (small, capped at 10)
 ├── boot_attempted    # double-boot detector (slot number of last attempt)

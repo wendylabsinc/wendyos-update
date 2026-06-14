@@ -1,4 +1,4 @@
-// wendy-update — generic A/B OTA tool for WendyOS.
+// wendyos-update — generic A/B OTA tool for WendyOS.
 // CLI contract: docs/cli-contract.md (v1, frozen).
 //
 // Exit codes: 0 ok · 1 error · 2 nothing-to-commit · 3 artifact rejected
@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -62,14 +63,14 @@ func (c *ctxReader) Read(p []byte) (int, error) {
 
 const version = "0.1.0-dev"
 
-const configPath = "/etc/wendy-update/config.json"
+const configPath = "/etc/wendyos-update/config.json"
 
-// Config is /etc/wendy-update/config.json — everything optional.
+// Config is /etc/wendyos-update/config.json — everything optional.
 type Config struct {
 	Connector      string `json:"connector"`        // override auto-detect
 	DeviceTypePath string `json:"device_type_path"` // override /etc/wendyos/device-type
-	StateDir       string `json:"state_dir"`        // override /data/wendy-update
-	HooksDir       string `json:"hooks_dir"`        // override /etc/wendy-update (root of <phase>.d dirs)
+	StateDir       string `json:"state_dir"`        // override /data/wendyos-update
+	HooksDir       string `json:"hooks_dir"`        // override /etc/wendyos-update (root of <phase>.d dirs)
 	HealthDir      string `json:"health_dir"`       // legacy: override the health phase dir only
 }
 
@@ -99,13 +100,13 @@ func main() {
 
 	// Anchor every invocation in the log (version + verb) — correlates
 	// journal entries across the verify/commit service boots.
-	slog.Info("wendy-update", "version", version, "verb", os.Args[1])
+	slog.Info("wendyos-update", "version", version, "verb", os.Args[1])
 
 	var err error
 	switch os.Args[1] {
 	case "install":
 		if len(os.Args) != 3 {
-			fmt.Fprintln(os.Stderr, "usage: wendy-update install <url|path>")
+			fmt.Fprintln(os.Stderr, "usage: wendyos-update install <url|path>")
 			os.Exit(1)
 		}
 		err = cmdInstall(ctx, os.Args[2])
@@ -120,7 +121,7 @@ func main() {
 	case "pack":
 		err = cmdPack(os.Args[2:])
 	case "verify-boot":
-		// Internal: wendy-update-verify.service. Not in the public
+		// Internal: wendyos-update-verify.service. Not in the public
 		// contract; best-effort, never fails the boot.
 		err = cmdVerifyBoot()
 	case "version", "--version":
@@ -145,14 +146,14 @@ func main() {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, `wendy-update `+version+`
+	fmt.Fprintln(os.Stderr, `wendyos-update `+version+`
 usage:
-  wendy-update install <url|path>   install a .wendy artifact (no reboot)
-  wendy-update commit               finalize after reboot (exit 2 = nothing to commit)
-  wendy-update rollback             swap back an uncommitted update
-  wendy-update status [--json]      current slot / pending state
-  wendy-update mark-good            reset slot health, clear pending state
-  wendy-update pack <flags>         build a .wendy artifact from a rootfs image (host-side)`)
+  wendyos-update install <url|path>   install a .wendy artifact (no reboot)
+  wendyos-update commit               finalize after reboot (exit 2 = nothing to commit)
+  wendyos-update rollback             swap back an uncommitted update
+  wendyos-update status [--json]      current slot / pending state
+  wendyos-update mark-good            reset slot health, clear pending state
+  wendyos-update pack <flags>         build a .wendy artifact from a rootfs image (host-side)`)
 }
 
 // Contract exit codes (docs/cli-contract.md).
@@ -212,7 +213,7 @@ func newEngine() (*engine.Engine, error) {
 		Conn:           conn,
 		StateDir:       stateDir,
 		DeviceTypePath: cfg.DeviceTypePath, // "" -> engine default
-		HooksDir:       cfg.HooksDir,       // "" -> engine default (/etc/wendy-update)
+		HooksDir:       cfg.HooksDir,       // "" -> engine default (/etc/wendyos-update)
 		HealthDir:      cfg.HealthDir,      // legacy health-phase override
 		ToolVersion:    version,
 		Progress:       emitProgress,
@@ -311,6 +312,17 @@ func cmdStatus(asJSON bool) error {
 	} else {
 		fmt.Fprintf(os.Stderr, "pending:      %s (%s), phase %s, target slot %d\n",
 			info.Pending.ArtifactName, info.Pending.ArtifactVersion, info.Pending.Phase, info.Pending.TargetSlot)
+	}
+	if len(info.Diagnostics) > 0 {
+		keys := make([]string, 0, len(info.Diagnostics))
+		for k := range info.Diagnostics {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		fmt.Fprintln(os.Stderr, "diagnostics:")
+		for _, k := range keys {
+			fmt.Fprintf(os.Stderr, "  %-30s %s\n", k, info.Diagnostics[k])
+		}
 	}
 	return nil
 }

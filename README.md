@@ -1,4 +1,4 @@
-# wendy-update
+# wendyos-update
 
 Generic A/B OTA tool for WendyOS. Replaces the Mender client and its Tegra
 glue on JetPack 7+ (meta-mender-tegra has no wrynose support). Standalone
@@ -14,14 +14,14 @@ today.
 
 - `docs/cli-contract.md` — verbs, exit codes, JSON-lines progress
 - `docs/manifest-schema.md` — the `.wendy` artifact format
-- `docs/state-schema.md` — `/data/wendy-update/` state files
+- `docs/state-schema.md` — `/data/wendyos-update/` state files
 - `docs/connector-architecture.md` — the portability guarantee: a new
   board = one connector, the rest stays generic
 
 ## Layout
 
 ```
-cmd/wendy-update/           CLI entry point
+cmd/wendyos-update/           CLI entry point
 internal/artifact/             .wendy manifest + streaming reader
 internal/engine/               update sequencing, state.json
 internal/connector/            Connector interface + registry/auto-detect
@@ -31,7 +31,7 @@ systemd/                       verify + auto-commit units
 
 ## Build
 
-Cross-compiled by Yocto (`go.bbclass`) via the `wendy-update` recipe in
+Cross-compiled by Yocto (`go.bbclass`) via the `wendyos-update` recipe in
 meta-edgeos. Host build for development: standard `go build ./...`.
 
 ## Status

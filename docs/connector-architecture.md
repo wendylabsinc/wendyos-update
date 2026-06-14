@@ -1,6 +1,6 @@
 # Connector architecture (v1 — frozen)
 
-The portability guarantee of wendy-update: **supporting a new board
+The portability guarantee of wendyos-update: **supporting a new board
 means writing one connector, nothing else.** The engine, artifact format,
 state machine, CLI, and systemd units are board-agnostic and never change
 per board.
@@ -44,7 +44,7 @@ Design rules that keep the boundary honest:
    themselves; the engine resolves by name.
 2. **Connectors never touch engine state.** `state.json` is engine-owned;
    connectors keep their own bookkeeping (e.g. `boot_attempted`) under
-   `/data/wendy-update/connector/<name>/` if they need any.
+   `/data/wendyos-update/connector/<name>/` if they need any.
 3. **Interface changes are additive.** If a future board needs a hook the
    interface lacks, the hook is added with a no-op default meaning for
    existing connectors — connectors are never rewritten for each other.
@@ -54,7 +54,7 @@ Design rules that keep the boundary honest:
 
 Resolution order:
 
-1. `connector` key in `/etc/wendy-update/config.json` (explicit wins)
+1. `connector` key in `/etc/wendyos-update/config.json` (explicit wins)
 2. auto-detect: each registered connector ships a `Detect()` probe
    (tegrauefi: `nvbootctrl` present + the NVIDIA efivar GUID visible;
    ubootenv: `fw_printenv` present + our env layout)
