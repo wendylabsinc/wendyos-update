@@ -19,13 +19,19 @@ import (
 // + t264 Phase 1). 0 = success; 1-6 = standard UEFI capsule errors; the
 // NVIDIA-specific codes and vendor range are documented per NVIDIA L4T.
 const (
-	esrtSuccess           = 0
-	esrtUEFIErrLo         = 1 // 1..6: standard UEFI capsule errors
-	esrtUEFIErrHi         = 6
-	esrtNvidiaAuthFail    = 6163   // capsule auth/cert failure (certs not enrolled)
-	esrtNvidiaSKUMismatch = 6164   // device SKU not in the capsule's BUP
-	esrtNvidiaVendorLo    = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
-	esrtNvidiaVendorHi    = 0x4000
+	esrtSuccess   = 0
+	esrtUEFIErrLo = 1 // 1..6: standard UEFI capsule errors
+	esrtUEFIErrHi = 6
+	// 6163: NVIDIA "CheckTheImage failed" — the capsule was rejected. NOT a
+	// cert/auth failure (test-cert capsules verify fine on a clean device).
+	// Observed to be boot-chain-state dependent: staging onto an un-settled
+	// or pending boot-chain transition produces it; a fresh flash or a
+	// fully-committed prior apply clears it (t264 investigation 2026-06-14;
+	// NVIDIA fwd: forums.developer.nvidia.com thread 368593).
+	esrtNvidiaCheckImageFail = 6163
+	esrtNvidiaSKUMismatch    = 6164   // device SKU not in the capsule's BUP
+	esrtNvidiaVendorLo       = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
+	esrtNvidiaVendorHi       = 0x4000
 )
 
 // BootIsCompromised reports whether the firmware flagged either slot
@@ -58,9 +64,10 @@ func (c *Controller) BootIsCompromised() (bool, error) {
 //  3. FALLBACK:  we booted, assume success — but say so loudly
 //
 // Validated ESRT codes (t234 incident analysis + t264 Phase 1):
-// 0 success; 1-6 standard UEFI capsule errors; 6163 NVIDIA capsule
-// auth/cert failure; 6164 NVIDIA SKU mismatch; 0x1000-0x4000 NVIDIA
-// vendor range. nvbootctrl's own capsule status is NOT consulted —
+// 0 success; 1-6 standard UEFI capsule errors; 6163 NVIDIA "CheckTheImage
+// failed" / capsule rejected (boot-chain-state dependent, NOT a cert/auth
+// failure — see the const above); 6164 NVIDIA SKU mismatch; 0x1000-0x4000
+// NVIDIA vendor range. nvbootctrl's own capsule status is NOT consulted —
 // NVIDIA documents it as unreliable.
 func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 	if _, err := os.Stat(c.RootDir + MarkerPath); err != nil {
@@ -101,8 +108,8 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 			return nil
 		case status >= esrtUEFIErrLo && status <= esrtUEFIErrHi:
 			return fmt.Errorf("platform verify: ESRT status %d (standard UEFI capsule error)", status)
-		case status == esrtNvidiaAuthFail:
-			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: capsule authentication failure — certificates not enrolled in device UEFI)", esrtNvidiaAuthFail)
+		case status == esrtNvidiaCheckImageFail:
+			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: capsule rejected / CheckTheImage failed — typically a pending/un-settled boot-chain state, not a signature problem)", esrtNvidiaCheckImageFail)
 		case status == esrtNvidiaSKUMismatch:
 			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: device SKU not included in the capsule's BUP)", esrtNvidiaSKUMismatch)
 		case status >= esrtNvidiaVendorLo && status <= esrtNvidiaVendorHi:
