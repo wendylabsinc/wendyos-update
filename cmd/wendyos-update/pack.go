@@ -13,8 +13,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/artifact"
-	"github.com/wendylabsinc/wendy-os-update/internal/blockdev"
+	"github.com/wendylabsinc/wendyos-update/internal/artifact"
+	"github.com/wendylabsinc/wendyos-update/internal/blockdev"
 )
 
 type stringList []string

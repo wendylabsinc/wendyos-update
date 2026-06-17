@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 // fakeNvbootctrl writes an executable stub that prints the given

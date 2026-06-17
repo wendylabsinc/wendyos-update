@@ -12,8 +12,8 @@ import (
 	"testing"
 
 	"github.com/klauspost/compress/zstd"
-	"github.com/wendylabsinc/wendy-os-update/internal/artifact"
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/artifact"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 // --- fake connector ---

@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 func (c *Controller) Diagnostics(verbose bool) map[string]string {

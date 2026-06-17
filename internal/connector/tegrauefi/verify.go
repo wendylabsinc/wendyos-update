@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 // ESRT entry0 last_attempt_status codes (validated: t234 incident analysis

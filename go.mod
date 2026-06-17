@@ -1,4 +1,4 @@
-module github.com/wendylabsinc/wendy-os-update
+module github.com/wendylabsinc/wendyos-update
 
 go 1.26
 

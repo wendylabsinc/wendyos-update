@@ -25,7 +25,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 	"golang.org/x/sys/unix"
 )
 

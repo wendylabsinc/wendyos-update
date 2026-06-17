@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 // ErrNothingToCommit maps to CLI exit code 2 — NOT an error for callers

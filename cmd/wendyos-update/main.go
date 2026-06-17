@@ -21,10 +21,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
-	_ "github.com/wendylabsinc/wendy-os-update/internal/connector/tegrauefi" // register
-	"github.com/wendylabsinc/wendy-os-update/internal/engine"
-	wlog "github.com/wendylabsinc/wendy-os-update/internal/log"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
+	_ "github.com/wendylabsinc/wendyos-update/internal/connector/tegrauefi" // register
+	"github.com/wendylabsinc/wendyos-update/internal/engine"
+	wlog "github.com/wendylabsinc/wendyos-update/internal/log"
 )
 
 // HTTP timeouts for streaming installs. No overall client timeout — the

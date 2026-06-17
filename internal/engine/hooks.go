@@ -21,7 +21,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 // DefaultHooksDir is the root holding the per-phase hook directories.

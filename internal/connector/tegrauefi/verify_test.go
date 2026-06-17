@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wendylabsinc/wendy-os-update/internal/connector"
+	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 func TestBootIsCompromised(t *testing.T) {
