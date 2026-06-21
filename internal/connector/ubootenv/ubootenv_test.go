@@ -3,10 +3,31 @@ package ubootenv
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
+
+// envScript MUST emit "key=value" lines. libubootenv's `fw_setenv -s` silently
+// ignores any line without '=', so a "key value" (space) format made every
+// real write a no-op (exit 0, nothing changed) and trials were never armed.
+func TestEnvScriptUsesEqualsFormat(t *testing.T) {
+	got := envScript(map[string]string{"wendyos_boot_slot": "0", "bootcount": "0"})
+	for _, want := range []string{"wendyos_boot_slot=0\n", "bootcount=0\n"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("envScript missing %q\ngot:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "wendyos_boot_slot 0") {
+		t.Errorf("envScript used space format (libubootenv ignores it):\n%s", got)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(got), "\n") {
+		if !strings.Contains(line, "=") {
+			t.Errorf("envScript produced a line without '=': %q", line)
+		}
+	}
+}
 
 // fakeEnv is an in-memory U-Boot environment for tests (the envStore seam).
 type fakeEnv struct {

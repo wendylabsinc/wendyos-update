@@ -33,9 +33,11 @@ package ubootenv
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
@@ -128,21 +130,48 @@ func (f fwEnv) get(name string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// set writes variables atomically via `fw_setenv -s -` (script on stdin:
-// one "name value" per line). libubootenv applies the whole script in a
-// single redundant-env write, so a power cut cannot leave a half-armed
-// trial (slot flipped but flag unset, or vice versa).
+// set writes variables atomically. libubootenv's `fw_setenv -s <file>` applies
+// the whole script in a single redundant-env write, so a power cut cannot leave
+// a half-armed trial (slot flipped but flag unset, or vice versa).
+//
+// Two libubootenv specifics, both learned the hard way bringing up RPi OTA:
+//   - the script MUST use "key=value"; libubootenv silently IGNORES any line
+//     without '=' (see `fw_setenv --help`). The earlier "key value" form made
+//     every write a no-op (exit 0, nothing changed) so trials were never armed.
+//   - `-s` opens a real file; it does NOT treat "-" as stdin. So write a temp
+//     file and pass its path, rather than piping the script to stdin.
 func (f fwEnv) set(vars map[string]string) error {
-	var b strings.Builder
-	for k, v := range vars {
-		fmt.Fprintf(&b, "%s %s\n", k, v)
+	tmp, err := os.CreateTemp("", "wendyos-fwenv-*.txt")
+	if err != nil {
+		return fmt.Errorf("fw_setenv: create script: %w", err)
 	}
-	cmd := exec.Command(f.setenv, "-s", "-")
-	cmd.Stdin = strings.NewReader(b.String())
-	if out, err := cmd.CombinedOutput(); err != nil {
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.WriteString(envScript(vars)); err != nil {
+		tmp.Close()
+		return fmt.Errorf("fw_setenv: write script: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("fw_setenv: close script: %w", err)
+	}
+	if out, err := exec.Command(f.setenv, "-s", tmp.Name()).CombinedOutput(); err != nil {
 		return fmt.Errorf("fw_setenv: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	// Flush before returning: callers arm a trial then reboot almost
+	// immediately, and on RPi the env is a file on the FAT (CONFIG_ENV_IS_IN_FAT).
+	// A global sync gets the env write (and the freshly written inactive rootfs)
+	// onto disk before the reboot. Harmless on Tegra.
+	syscall.Sync()
 	return nil
+}
+
+// envScript renders vars as a libubootenv `-s` script — one "key=value" per
+// line. The '=' is REQUIRED: libubootenv silently ignores lines without it.
+func envScript(vars map[string]string) string {
+	var b strings.Builder
+	for k, v := range vars {
+		fmt.Fprintf(&b, "%s=%s\n", k, v)
+	}
+	return b.String()
 }
 
 // --- slot ↔ partition resolution ---
