@@ -96,6 +96,18 @@ func testController(t *testing.T, env *fakeEnv, running connector.Slot, makeSlot
 			return c.RootDir + "/dev/unknown", nil
 		}
 	}
+
+	// Single-disk fake: both slots live on one disk ("mmcblk0"). Exercises the
+	// boot-disk-scoped resolution path; empty when makeSlots is false.
+	c.listPartsFn = func() ([]partInfo, error) {
+		if !makeSlots {
+			return nil, nil
+		}
+		return []partInfo{
+			{path: devA, partlabel: partlabelA, pkname: "mmcblk0"},
+			{path: devB, partlabel: partlabelB, pkname: "mmcblk0"},
+		}, nil
+	}
 	return c
 }
 
@@ -151,6 +163,38 @@ func TestCurrentSlotNoMatch(t *testing.T) {
 	c := testController(t, newFakeEnv(nil), -1, true)
 	if _, err := c.CurrentSlot(); err == nil {
 		t.Fatal("CurrentSlot with unmatched root: want error, got nil")
+	}
+}
+
+// TestSlotResolutionScopedToBootDisk reproduces the SD+NVMe collision: two
+// flashed disks, both carrying rootfsA/rootfsB. Slot resolution must stay on
+// the disk the running root is on (the SD here) and never resolve to the NVMe's
+// same-labelled partitions — otherwise CurrentSlot fails ("matches neither") and
+// install would write the inactive slot to the wrong disk.
+func TestSlotResolutionScopedToBootDisk(t *testing.T) {
+	c := New()
+	c.env = newFakeEnv(nil)
+	c.RootDir = t.TempDir()
+	const sdA, sdB = "/dev/mmcblk0p3", "/dev/mmcblk0p4"
+	const nvA, nvB = "/dev/nvme0n1p3", "/dev/nvme0n1p4"
+	c.rootDeviceFn = func() (string, error) { return sdA, nil } // booted from SD
+	c.listPartsFn = func() ([]partInfo, error) {
+		return []partInfo{
+			{path: sdA, partlabel: partlabelA, pkname: "mmcblk0"},
+			{path: sdB, partlabel: partlabelB, pkname: "mmcblk0"},
+			{path: nvA, partlabel: partlabelA, pkname: "nvme0n1"},
+			{path: nvB, partlabel: partlabelB, pkname: "nvme0n1"},
+		}, nil
+	}
+
+	if got, err := c.CurrentSlot(); err != nil || got != connector.SlotA {
+		t.Fatalf("CurrentSlot = %v, %v; want A, nil", got, err)
+	}
+	if dev, err := c.PartitionFor(connector.SlotA); err != nil || dev != sdA {
+		t.Fatalf("PartitionFor(A) = %q, %v; want %q (SD, not NVMe)", dev, err, sdA)
+	}
+	if dev, err := c.PartitionFor(connector.SlotB); err != nil || dev != sdB {
+		t.Fatalf("PartitionFor(B) = %q, %v; want %q (SD, not NVMe)", dev, err, sdB)
 	}
 }
 

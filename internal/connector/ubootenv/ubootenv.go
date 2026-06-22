@@ -96,13 +96,15 @@ type Controller struct {
 	RootDir string // prefix for /dev lookups (tests); "" in production
 
 	env          envStore
-	rootDeviceFn func() (string, error) // block device mounted at /
+	rootDeviceFn func() (string, error)       // block device mounted at /
+	listPartsFn  func() ([]partInfo, error)   // block partitions (lsblk)
 }
 
 func New() *Controller {
 	return &Controller{
 		env:          fwEnv{printenv: "fw_printenv", setenv: "fw_setenv"},
 		rootDeviceFn: currentRootDevice,
+		listPartsFn:  lsblkParts,
 	}
 }
 
@@ -183,55 +185,145 @@ func rootfsPartlabel(s connector.Slot) string {
 	return partlabelB
 }
 
-// PartitionFor resolves a slot's rootfs block device by GPT partlabel.
-// Unlike tegrauefi this needs no current-slot context or arithmetic: the
-// wks labels the two slots rootfsA/rootfsB and they never move.
+// partInfo is one block partition as reported by lsblk: device path, GPT
+// partlabel, and parent whole-disk kernel name (PKNAME).
+type partInfo struct {
+	path      string // e.g. /dev/mmcblk0p3
+	partlabel string // GPT partition name, e.g. rootfsA
+	pkname    string // parent disk kernel name, e.g. mmcblk0 ("" for a disk)
+}
+
+// lsblkParts lists block partitions with their GPT partlabel and parent disk.
+// -P (KEY="value") is used over -r because it is robust to empty columns
+// (partitions with no partlabel).
+func lsblkParts() ([]partInfo, error) {
+	out, err := exec.Command("lsblk", "-Pno", "PATH,PARTLABEL,PKNAME").Output()
+	if err != nil {
+		return nil, err
+	}
+	var parts []partInfo
+	for _, line := range strings.Split(string(out), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		parts = append(parts, partInfo{
+			path:      lsblkField(line, "PATH"),
+			partlabel: lsblkField(line, "PARTLABEL"),
+			pkname:    lsblkField(line, "PKNAME"),
+		})
+	}
+	return parts, nil
+}
+
+// lsblkField extracts KEY's value from an lsblk -P line (KEY="value" ...).
+func lsblkField(line, key string) string {
+	pfx := key + `="`
+	i := strings.Index(line, pfx)
+	if i < 0 {
+		return ""
+	}
+	i += len(pfx)
+	j := strings.IndexByte(line[i:], '"')
+	if j < 0 {
+		return ""
+	}
+	return line[i : i+j]
+}
+
+// canon canonicalizes a device path via EvalSymlinks, returning the input
+// unchanged on failure (e.g. the path is not a real node, as in unit tests).
+func canon(dev string) string {
+	if c, err := filepath.EvalSymlinks(dev); err == nil {
+		return c
+	}
+	return dev
+}
+
+// bootDisk returns the parent whole-disk kernel name (PKNAME) of the running
+// root, e.g. "mmcblk0" for /dev/mmcblk0p3. Rootfs-slot resolution is scoped to
+// this disk so a SECOND flashed disk (e.g. an NVMe beside the SD, both carrying
+// rootfsA/rootfsB) cannot shadow the disk we actually booted from — and so
+// `install` never writes the inactive slot to the wrong disk.
+func (c *Controller) bootDisk(parts []partInfo) (string, error) {
+	root, err := c.rootDeviceFn()
+	if err != nil {
+		return "", err
+	}
+	root = canon(root)
+	for _, p := range parts {
+		if canon(p.path) == root {
+			return p.pkname, nil
+		}
+	}
+	return "", fmt.Errorf("running root %q not found among partitions", root)
+}
+
+// PartitionFor resolves a slot's rootfs block device by GPT partlabel, scoped
+// to the disk we booted from (see bootDisk). The wks labels the two slots
+// rootfsA/rootfsB and they never move.
 //
-//  1. /dev/disk/by-partlabel/rootfs{A,B} (udev symlink — the normal path)
-//  2. lsblk -rno PATH,PARTLABEL scan (early boot before the symlink exists)
+//  1. lsblk scan restricted to the boot disk — the unambiguous, normal path.
+//  2. /dev/disk/by-partlabel/rootfs{A,B} symlink — fallback when the running
+//     root is not listed (early boot / unit tests). This symlink is ambiguous
+//     when a second disk carries the same labels, so it is only the fallback.
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
 	label := rootfsPartlabel(s)
+
+	if parts, err := c.listPartsFn(); err == nil {
+		if disk, err := c.bootDisk(parts); err == nil && disk != "" {
+			for _, p := range parts {
+				if p.partlabel == label && p.pkname == disk {
+					return p.path, nil
+				}
+			}
+		}
+	}
 
 	link := c.RootDir + "/dev/disk/by-partlabel/" + label
 	if dev, err := filepath.EvalSymlinks(link); err == nil {
 		return dev, nil
 	}
 
-	if out, err := exec.Command("lsblk", "-rno", "PATH,PARTLABEL").Output(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 2 && fields[1] == label {
-				return fields[0], nil
-			}
-		}
-	}
-
-	return "", fmt.Errorf("partition for slot %s: no partition labelled %q", s, label)
+	return "", fmt.Errorf("partition for slot %s: no partition labelled %q on the boot disk", s, label)
 }
 
-// CurrentSlot returns the slot actually running, derived from the block
-// device mounted at / matched against the two rootfs partitions. This is
-// deliberately ground-truth (what booted) rather than reading
-// wendyos_boot_slot (what we *asked* to boot): after a failed trial U-Boot
-// falls back to the other slot without rewriting the env, so the running
-// rootfs is the only reliable source. The engine's fallback detection
-// (running slot != target slot) depends on this being real.
+// CurrentSlot returns the slot actually running, derived from the block device
+// mounted at /. This is deliberately ground-truth (what booted) rather than
+// reading wendyos_boot_slot (what we *asked* to boot): after a failed trial
+// U-Boot falls back to the other slot without rewriting the env, so the running
+// rootfs is the only reliable source. The engine's fallback detection (running
+// slot != target slot) depends on this being real.
 func (c *Controller) CurrentSlot() (connector.Slot, error) {
 	root, err := c.rootDeviceFn()
 	if err != nil {
 		return 0, fmt.Errorf("current slot: %w", err)
 	}
-	root, _ = filepath.EvalSymlinks(root) // canonicalize; ignore failure
+	root = canon(root)
 
+	// Read the running root partition's OWN partlabel — unambiguous even when a
+	// second disk carries the same rootfsA/rootfsB labels.
+	if parts, err := c.listPartsFn(); err == nil {
+		for _, p := range parts {
+			if canon(p.path) != root {
+				continue
+			}
+			switch p.partlabel {
+			case partlabelA:
+				return connector.SlotA, nil
+			case partlabelB:
+				return connector.SlotB, nil
+			}
+		}
+	}
+
+	// Fallback (running root not listed by lsblk, e.g. unit tests): compare the
+	// running root against each slot's resolved device.
 	for _, s := range []connector.Slot{connector.SlotA, connector.SlotB} {
 		dev, err := c.PartitionFor(s)
 		if err != nil {
 			continue
 		}
-		if cdev, err := filepath.EvalSymlinks(dev); err == nil {
-			dev = cdev
-		}
-		if dev == root {
+		if canon(dev) == root {
 			return s, nil
 		}
 	}
