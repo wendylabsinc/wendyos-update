@@ -51,10 +51,16 @@ const (
 	envBootCount        = "bootcount" // U-Boot's native counter
 )
 
-// GPT partition labels for the two rootfs slots. The hand-authored RPi
-// A/B wks (meta-edgeos) labels its rootfs partitions exactly these, so
-// slot→device resolution is a stable partlabel lookup — no partition-number
-// arithmetic, no dependency on the current slot (unlike tegrauefi).
+// Slot labels for the two rootfs slots. The hand-authored RPi A/B wks
+// (meta-edgeos) labels its rootfs partitions exactly these, so slot→device
+// resolution is a stable label lookup — no partition-number arithmetic, no
+// dependency on the current slot (unlike tegrauefi).
+//
+// On the GPT boards (rpi4/rpi5) these are GPT PARTLABELs. On an MBR table
+// (rpi3, whose BCM2837 bootrom can only boot MBR) there are no partlabels, so
+// the same names are carried as the ext4 FILESYSTEM label (`wic --label`).
+// effectiveLabel() prefers the partlabel and falls back to the fs label, so
+// GPT resolution is unchanged and MBR resolves through the fallback.
 const (
 	partlabelA = "rootfsA"
 	partlabelB = "rootfsB"
@@ -178,7 +184,7 @@ func envScript(vars map[string]string) string {
 
 // --- slot ↔ partition resolution ---
 
-func rootfsPartlabel(s connector.Slot) string {
+func rootfsSlotLabel(s connector.Slot) string {
 	if s == connector.SlotA {
 		return partlabelA
 	}
@@ -186,18 +192,30 @@ func rootfsPartlabel(s connector.Slot) string {
 }
 
 // partInfo is one block partition as reported by lsblk: device path, GPT
-// partlabel, and parent whole-disk kernel name (PKNAME).
+// partlabel, filesystem label, and parent whole-disk kernel name (PKNAME).
 type partInfo struct {
 	path      string // e.g. /dev/mmcblk0p3
-	partlabel string // GPT partition name, e.g. rootfsA
+	partlabel string // GPT partition name, e.g. rootfsA ("" on an MBR table)
+	label     string // filesystem label, e.g. rootfsA (MBR fallback for partlabel)
 	pkname    string // parent disk kernel name, e.g. mmcblk0 ("" for a disk)
 }
 
-// lsblkParts lists block partitions with their GPT partlabel and parent disk.
-// -P (KEY="value") is used over -r because it is robust to empty columns
-// (partitions with no partlabel).
+// effectiveLabel is a partition's slot identity: the GPT partlabel when present,
+// else the filesystem label. GPT boards (rpi4/rpi5) always set a partlabel, so
+// they never consult the fs label and resolve exactly as before. MBR (rpi3) has
+// no partlabel, so it resolves through the fs label `wic --label` wrote.
+func effectiveLabel(p partInfo) string {
+	if p.partlabel != "" {
+		return p.partlabel
+	}
+	return p.label
+}
+
+// lsblkParts lists block partitions with their partlabel, fs label and parent
+// disk. -P (KEY="value") is used over -r because it is robust to empty columns
+// (partitions with no partlabel, e.g. every partition on an MBR table).
 func lsblkParts() ([]partInfo, error) {
-	out, err := exec.Command("lsblk", "-Pno", "PATH,PARTLABEL,PKNAME").Output()
+	out, err := exec.Command("lsblk", "-Pno", "PATH,PARTLABEL,LABEL,PKNAME").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -209,6 +227,7 @@ func lsblkParts() ([]partInfo, error) {
 		parts = append(parts, partInfo{
 			path:      lsblkField(line, "PATH"),
 			partlabel: lsblkField(line, "PARTLABEL"),
+			label:     lsblkField(line, "LABEL"),
 			pkname:    lsblkField(line, "PKNAME"),
 		})
 	}
@@ -263,25 +282,27 @@ func (c *Controller) bootDisk(parts []partInfo) (string, error) {
 // rootfsA/rootfsB and they never move.
 //
 //  1. lsblk scan restricted to the boot disk — the unambiguous, normal path.
-//  2. /dev/disk/by-partlabel/rootfs{A,B} symlink — fallback when the running
-//     root is not listed (early boot / unit tests). This symlink is ambiguous
-//     when a second disk carries the same labels, so it is only the fallback.
+//  2. /dev/disk/by-partlabel/rootfs{A,B} (GPT) then /dev/disk/by-label/rootfs{A,B}
+//     (MBR fs label) symlink — fallback when the running root is not listed
+//     (early boot / unit tests). These symlinks are ambiguous when a second
+//     disk carries the same labels, so they are only the fallback.
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
-	label := rootfsPartlabel(s)
+	label := rootfsSlotLabel(s)
 
 	if parts, err := c.listPartsFn(); err == nil {
 		if disk, err := c.bootDisk(parts); err == nil && disk != "" {
 			for _, p := range parts {
-				if p.partlabel == label && p.pkname == disk {
+				if effectiveLabel(p) == label && p.pkname == disk {
 					return p.path, nil
 				}
 			}
 		}
 	}
 
-	link := c.RootDir + "/dev/disk/by-partlabel/" + label
-	if dev, err := filepath.EvalSymlinks(link); err == nil {
-		return dev, nil
+	for _, base := range []string{"/dev/disk/by-partlabel/", "/dev/disk/by-label/"} {
+		if dev, err := filepath.EvalSymlinks(c.RootDir + base + label); err == nil {
+			return dev, nil
+		}
 	}
 
 	return "", fmt.Errorf("partition for slot %s: no partition labelled %q on the boot disk", s, label)
@@ -300,14 +321,15 @@ func (c *Controller) CurrentSlot() (connector.Slot, error) {
 	}
 	root = canon(root)
 
-	// Read the running root partition's OWN partlabel — unambiguous even when a
-	// second disk carries the same rootfsA/rootfsB labels.
+	// Read the running root partition's OWN label — unambiguous even when a
+	// second disk carries the same rootfsA/rootfsB labels. effectiveLabel uses
+	// the GPT partlabel (rpi4/5) or the fs label (rpi3/MBR).
 	if parts, err := c.listPartsFn(); err == nil {
 		for _, p := range parts {
 			if canon(p.path) != root {
 				continue
 			}
-			switch p.partlabel {
+			switch effectiveLabel(p) {
 			case partlabelA:
 				return connector.SlotA, nil
 			case partlabelB:

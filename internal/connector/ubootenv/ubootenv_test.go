@@ -117,6 +117,59 @@ func TestSlotEnvValue(t *testing.T) {
 	}
 }
 
+// On an MBR table (rpi3 — the BCM2837 bootrom can only boot MBR) lsblk reports
+// no PARTLABEL, so the slot identity rides on the ext4 FILESYSTEM label that
+// `wic --label rootfsA/rootfsB` writes. Resolution must fall back to it.
+func TestSlotResolutionMBRFilesystemLabel(t *testing.T) {
+	c := New()
+	c.env = newFakeEnv(nil)
+	c.RootDir = t.TempDir()
+	const a, b = "/dev/mmcblk0p2", "/dev/mmcblk0p3"
+	c.rootDeviceFn = func() (string, error) { return a, nil } // booted slot A
+	c.listPartsFn = func() ([]partInfo, error) {
+		// MBR: partlabel empty; identity is in the filesystem label.
+		return []partInfo{
+			{path: a, partlabel: "", label: partlabelA, pkname: "mmcblk0"},
+			{path: b, partlabel: "", label: partlabelB, pkname: "mmcblk0"},
+		}, nil
+	}
+
+	if got, err := c.CurrentSlot(); err != nil || got != connector.SlotA {
+		t.Fatalf("CurrentSlot = %v, %v; want A, nil", got, err)
+	}
+	if dev, err := c.PartitionFor(connector.SlotA); err != nil || dev != a {
+		t.Fatalf("PartitionFor(A) = %q, %v; want %q", dev, err, a)
+	}
+	if dev, err := c.PartitionFor(connector.SlotB); err != nil || dev != b {
+		t.Fatalf("PartitionFor(B) = %q, %v; want %q", dev, err, b)
+	}
+}
+
+// The GPT partlabel is authoritative and takes precedence over the fs label, so
+// adding the MBR fs-label fallback cannot change resolution on GPT boards
+// (rpi4/rpi5): even a deliberately wrong fs label is ignored when a partlabel is
+// present. This is the guard that the fallback is purely additive.
+func TestSlotResolutionPartlabelWinsOverFSLabel(t *testing.T) {
+	c := New()
+	c.env = newFakeEnv(nil)
+	c.RootDir = t.TempDir()
+	const a, b = "/dev/mmcblk0p3", "/dev/mmcblk0p4"
+	c.rootDeviceFn = func() (string, error) { return a, nil }
+	c.listPartsFn = func() ([]partInfo, error) {
+		return []partInfo{
+			{path: a, partlabel: partlabelA, label: "bogusA", pkname: "mmcblk0"},
+			{path: b, partlabel: partlabelB, label: "bogusB", pkname: "mmcblk0"},
+		}, nil
+	}
+
+	if got, err := c.CurrentSlot(); err != nil || got != connector.SlotA {
+		t.Fatalf("CurrentSlot = %v, %v; want A, nil", got, err)
+	}
+	if dev, err := c.PartitionFor(connector.SlotB); err != nil || dev != b {
+		t.Fatalf("PartitionFor(B) = %q, %v; want %q", dev, err, b)
+	}
+}
+
 func TestPartitionFor(t *testing.T) {
 	env := newFakeEnv(nil)
 	c := testController(t, env, connector.SlotA, true)
