@@ -10,25 +10,62 @@ import (
 )
 
 func TestBootIsCompromised(t *testing.T) {
-	c := testController(t)
+	const normal = "\x07\x00\x00\x00\x00\x00\x00\x00"
+	const unbootable = "\x07\x00\x00\x00\xff\x00\x00\x00"
 
-	// no variables at all: not compromised
-	if got, err := c.BootIsCompromised(); err != nil || got {
-		t.Fatalf("no vars: got=%v err=%v", got, err)
-	}
+	// runningA / runningB stub `nvbootctrl get-current-slot`.
+	runningA := func() string { return fakeNvbootctrl(t, "0\n") }
+	runningB := func() string { return fakeNvbootctrl(t, "1\n") }
 
-	// both normal
-	writeSlotVar(t, c, connector.SlotA, []byte{0x07, 0, 0, 0, 0, 0, 0, 0})
-	writeSlotVar(t, c, connector.SlotB, []byte{0x07, 0, 0, 0, 0, 0, 0, 0})
-	if got, _ := c.BootIsCompromised(); got {
-		t.Fatal("both normal: must not be compromised")
-	}
+	t.Run("no status var for the booted slot", func(t *testing.T) {
+		c := testController(t)
+		c.Nvbootctrl = runningA()
+		if got, err := c.BootIsCompromised(); err != nil || got {
+			t.Fatalf("no vars: got=%v err=%v", got, err)
+		}
+	})
 
-	// slot B unbootable
-	writeSlotVar(t, c, connector.SlotB, []byte{0x07, 0, 0, 0, 0xFF, 0, 0, 0})
-	if got, _ := c.BootIsCompromised(); !got {
-		t.Fatal("slot B 0xFF: must be compromised")
-	}
+	t.Run("booted slot normal", func(t *testing.T) {
+		c := testController(t)
+		c.Nvbootctrl = runningA()
+		writeSlotVar(t, c, connector.SlotA, []byte(normal))
+		writeSlotVar(t, c, connector.SlotB, []byte(normal))
+		if got, _ := c.BootIsCompromised(); got {
+			t.Fatal("booted slot normal: must not be compromised")
+		}
+	})
+
+	// WDY-1742 regression: a stale 0xFF left on the INACTIVE slot must not
+	// flag a healthy boot of the active slot (the old both-slots scan did).
+	t.Run("stale unbootable on inactive slot is ignored", func(t *testing.T) {
+		c := testController(t)
+		c.Nvbootctrl = runningA() // booted A
+		writeSlotVar(t, c, connector.SlotA, []byte(normal))
+		writeSlotVar(t, c, connector.SlotB, []byte(unbootable))
+		if got, _ := c.BootIsCompromised(); got {
+			t.Fatal("stale inactive 0xFF: must NOT be compromised")
+		}
+	})
+
+	t.Run("booted slot unbootable", func(t *testing.T) {
+		c := testController(t)
+		c.Nvbootctrl = runningB() // booted B
+		writeSlotVar(t, c, connector.SlotB, []byte(unbootable))
+		if got, _ := c.BootIsCompromised(); !got {
+			t.Fatal("booted slot 0xFF: must be compromised")
+		}
+	})
+
+	// WDY-1742: an unvalidated size is inconclusive, not compromised — the
+	// engine's slot check + ESRT cascade stay authoritative.
+	t.Run("unexpected size is inconclusive", func(t *testing.T) {
+		c := testController(t)
+		c.Nvbootctrl = runningB() // booted B
+		writeSlotVar(t, c, connector.SlotB, []byte{0x07, 0, 0, 0}) // 4 bytes, no status word
+		if got, _ := c.BootIsCompromised(); got {
+			t.Fatal("unexpected size: must be inconclusive (not compromised)")
+		}
+	})
 }
 
 // verifySetup prepares RootDir with the marker, optional saved version,

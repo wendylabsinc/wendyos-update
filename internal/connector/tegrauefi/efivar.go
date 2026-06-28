@@ -2,7 +2,8 @@ package tegrauefi
 
 // efivarfs access for the NVIDIA RootfsStatusSlot variables.
 //
-// Validated variable format (t234/r36 and t264/r38):
+// Validated variable format (t234/r36, t264/r38, and Orin Nano t234/r39.2 —
+// the last read directly off the device for WDY-1742, identical 8-byte layout):
 //   bytes 0..3  EFI attributes, 0x07 = NV+BS+RT (little-endian uint32)
 //   bytes 4..7  status (little-endian uint32): 0 = normal, 0xFF = unbootable
 //
@@ -33,10 +34,21 @@ func readStatus(path string) ([]byte, error) {
 	return os.ReadFile(path)
 }
 
+// statusIsWellFormed reports whether raw is the validated 8-byte
+// attrs+status layout. Confirmed identical on t234/r36, t264/r38, and Orin
+// Nano t234/r39.2 (read off the device for WDY-1742). A different size is a
+// layout we have NOT validated on this board: BootIsCompromised treats it as
+// inconclusive rather than compromised, so the documented JP6 wrong-sized
+// variable cannot force a false rollback. The engine's running-slot vs
+// target-slot check and the ESRT cascade remain the authoritative guards.
+func statusIsWellFormed(raw []byte) bool {
+	return len(raw) == 8
+}
+
 // statusIsNormal reports whether raw content is a well-formed
 // "normal" status variable (size 8, all four status bytes zero).
 func statusIsNormal(raw []byte) bool {
-	if len(raw) != 8 {
+	if !statusIsWellFormed(raw) {
 		return false
 	}
 	return raw[4] == 0 && raw[5] == 0 && raw[6] == 0 && raw[7] == 0

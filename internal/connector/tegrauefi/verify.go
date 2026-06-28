@@ -11,8 +11,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
-	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
 // ESRT entry0 last_attempt_status codes (validated: t234 incident analysis
@@ -34,22 +32,48 @@ const (
 	esrtNvidiaVendorHi       = 0x4000
 )
 
-// BootIsCompromised reports whether the firmware flagged either slot
-// (RootfsStatusSlot status != 0). The engine calls this only while an
-// update is pending — a 0xFF here right after a swap means UEFI burned
-// the retry budget and fell back.
+// BootIsCompromised reports whether the firmware flagged the slot we
+// actually booted (RootfsStatusSlot status != 0) — a 0xFF right after a
+// swap means UEFI burned the retry budget. The engine calls this only
+// while an update is pending.
+//
+// Only the BOOTED slot is evidence about this boot's health. The previous
+// implementation scanned both slots and flagged failure if EITHER was
+// non-normal, so a stale 0xFF left on the inactive/old slot false-positived
+// a perfectly healthy update (WDY-1742). Firmware fallback — running a
+// different slot than the update targeted — is detected separately by the
+// engine's running-slot vs target-slot check, not here.
+//
+// Conservative on uncertainty: if we cannot determine the current slot, or
+// the booted slot's status var is absent or not the validated 8-byte layout,
+// we return "not compromised" rather than crying wolf. The 8-byte format is
+// confirmed on t234 (incl. Orin Nano r39.2, read off the device) and t264;
+// an unexpected size (the other WDY-1742 failure mode) is treated as
+// inconclusive instead of forcing a rollback.
+// The engine's slot check and the ESRT platform-verify cascade remain the
+// authoritative guards, so this loses no genuine-fallback detection.
 func (c *Controller) BootIsCompromised() (bool, error) {
-	for _, s := range []connector.Slot{connector.SlotA, connector.SlotB} {
-		raw, err := readStatus(c.statusVar(s))
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return false, fmt.Errorf("boot health: %w", err)
-		}
-		if !statusIsNormal(raw) {
-			return true, nil
-		}
+	cur, err := c.CurrentSlot()
+	if err != nil {
+		slog.Warn("boot health: cannot determine current slot; skipping efivar check", "err", err)
+		return false, nil
+	}
+
+	raw, err := readStatus(c.statusVar(cur))
+	if os.IsNotExist(err) {
+		return false, nil // no status var for the booted slot: nothing to flag
+	}
+	if err != nil {
+		return false, fmt.Errorf("boot health: %w", err)
+	}
+	if !statusIsWellFormed(raw) {
+		slog.Warn("boot health: RootfsStatusSlot has unvalidated format; treating as inconclusive",
+			"slot", cur.String(), "bytes", len(raw))
+		return false, nil
+	}
+	if !statusIsNormal(raw) {
+		slog.Warn("boot health: firmware flagged the booted slot unhealthy", "slot", cur.String())
+		return true, nil
 	}
 	return false, nil
 }
