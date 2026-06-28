@@ -118,6 +118,12 @@ func main() {
 	case "status":
 		statusArgs := os.Args[2:]
 		err = cmdStatus(hasFlag(statusArgs, "--json"), hasFlag(statusArgs, "--verbose") || hasFlag(statusArgs, "-v"))
+	case "switch":
+		if len(os.Args) != 3 {
+			fmt.Fprintln(os.Stderr, "usage: wendyos-update switch <other|a|b>")
+			os.Exit(1)
+		}
+		err = cmdSwitch(os.Args[2])
 	case "mark-good":
 		err = cmdMarkGood()
 	case "pack":
@@ -154,7 +160,9 @@ usage:
   wendyos-update commit               finalize after reboot (exit 2 = nothing to commit)
   wendyos-update rollback             swap back an uncommitted update
   wendyos-update status [--json] [--verbose]
-                                      current slot / pending state (--verbose adds a raw slot/EFI-var snapshot)
+                                      per-slot state (rootfs/distro/kernel) + pending update
+                                      (--verbose adds a raw slot/EFI-var snapshot)
+  wendyos-update switch <other|a|b>   boot the other slot next, no update (reboot to apply)
   wendyos-update mark-good            reset slot health, clear pending state
   wendyos-update pack <flags>         build a .wendy artifact from a rootfs image (host-side)`)
 }
@@ -320,23 +328,109 @@ func cmdStatus(asJSON, verbose bool) error {
 		fmt.Println(string(out))
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "connector:    %s\ncurrent slot: %s\n", info.Connector, info.CurrentSlot)
-	if info.Pending == nil {
-		fmt.Fprintln(os.Stderr, "pending:      none")
-	} else {
-		fmt.Fprintf(os.Stderr, "pending:      %s (%s), phase %s, target slot %d\n",
-			info.Pending.ArtifactName, info.Pending.ArtifactVersion, info.Pending.Phase, info.Pending.TargetSlot)
+
+	w := os.Stderr
+	fmt.Fprintf(w, "wendyos-update %s   ·   connector: %s\n", version, info.Connector)
+
+	fmt.Fprintln(w, "\nSystem")
+	fmt.Fprintf(w, "  %-20s %s\n", "booted slot:", info.CurrentSlot)
+	for _, kv := range info.System {
+		fmt.Fprintf(w, "  %-20s %s\n", kv.Key+":", kv.Value)
 	}
-	if len(info.Diagnostics) > 0 {
+
+	fmt.Fprintln(w, "\nSlots")
+	for _, s := range info.Slots {
+		marker, label := "○ ", "inactive"
+		if s.Booted {
+			marker, label = "● ", "booted"
+		}
+		fmt.Fprintf(w, "  %s%s   %s\n", marker, s.Slot, label)
+		if line := rootfsLine(s); line != "" {
+			fmt.Fprintf(w, "        %-12s %s\n", "rootfs:", line)
+		}
+		fmt.Fprintf(w, "        %-12s %s\n", "distro:", orUnknown(s.Distro))
+		fmt.Fprintf(w, "        %-12s %s\n", "kernel:", orUnknown(s.Kernel))
+		if s.Retries != "" {
+			fmt.Fprintf(w, "        %-12s %s\n", "retries:", s.Retries)
+		}
+		if s.Note != "" {
+			fmt.Fprintf(w, "        %-12s %s\n", "note:", s.Note)
+		}
+	}
+
+	fmt.Fprintln(w, "\nPending update")
+	if info.Pending == nil {
+		fmt.Fprintln(w, "  none")
+	} else {
+		p := info.Pending
+		fmt.Fprintf(w, "  %-12s %s\n", "artifact:", p.ArtifactName)
+		fmt.Fprintf(w, "  %-12s %s\n", "version:", p.ArtifactVersion)
+		fmt.Fprintf(w, "  %-12s %s\n", "phase:", p.Phase)
+		fmt.Fprintf(w, "  %-12s %s\n", "target:", connector.Slot(p.TargetSlot).String())
+	}
+
+	if verbose && len(info.Diagnostics) > 0 {
 		keys := make([]string, 0, len(info.Diagnostics))
 		for k := range info.Diagnostics {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		fmt.Fprintln(os.Stderr, "diagnostics:")
+		fmt.Fprintln(w, "\nRaw diagnostics")
 		for _, k := range keys {
-			fmt.Fprintf(os.Stderr, "  %-30s %s\n", k, info.Diagnostics[k])
+			fmt.Fprintf(w, "  %-30s %s\n", k, info.Diagnostics[k])
 		}
+	}
+	return nil
+}
+
+// rootfsLine renders a slot's device + health on one line, rauc-style
+// (e.g. "/dev/nvme0n1p1, normal"); either part may be absent.
+func rootfsLine(s engine.SlotState) string {
+	parts := make([]string, 0, 2)
+	if s.Partition != "" {
+		parts = append(parts, s.Partition)
+	}
+	if s.RootfsHealth != "" {
+		parts = append(parts, s.RootfsHealth)
+	}
+	return strings.Join(parts, ", ")
+}
+
+func orUnknown(s string) string {
+	if s == "" {
+		return "unknown"
+	}
+	return s
+}
+
+func cmdSwitch(arg string) error {
+	eng, err := newEngine()
+	if err != nil {
+		return err
+	}
+	cur, err := eng.Conn.CurrentSlot()
+	if err != nil {
+		return err
+	}
+	var target connector.Slot
+	switch strings.ToLower(arg) {
+	case "other":
+		target = cur.Other()
+	case "a":
+		target = connector.SlotA
+	case "b":
+		target = connector.SlotB
+	default:
+		return fmt.Errorf("switch: unknown target %q (use other|a|b)", arg)
+	}
+	if err := eng.Switch(target); err != nil {
+		return err
+	}
+	if !stdoutIsTTY {
+		line, _ := json.Marshal(map[string]any{
+			"phase": "switch", "target_slot": target.String(), "reboot_required": true,
+		})
+		fmt.Println(string(line))
 	}
 	return nil
 }

@@ -128,3 +128,83 @@ func varStem(filename string) string {
 	}
 	return filename
 }
+
+// SlotStatus reports a slot's rootfs health (the RootfsStatusSlot efivar)
+// and remaining trial attempts (nvbootctrl rootfs retry_count). Display-only.
+func (c *Controller) SlotStatus(s connector.Slot) connector.SlotStatus {
+	var st connector.SlotStatus
+	if raw, err := readStatus(c.statusVar(s)); err == nil {
+		if statusIsNormal(raw) {
+			st.RootfsHealth = "normal"
+		} else {
+			st.RootfsHealth = "unbootable"
+		}
+	}
+	if info := c.rootfsSlotInfo(); info != nil {
+		if d, ok := info[int(s)]; ok {
+			st.Retries = d.retry
+			if st.RootfsHealth == "" && d.status != "" {
+				st.RootfsHealth = d.status // efivar unreadable: fall back to nvbootctrl
+			}
+		}
+	}
+	return st
+}
+
+type rootfsSlot struct{ retry, status string }
+
+// rootfsSlotInfo parses `nvbootctrl -t rootfs dump-slots-info` into per-slot
+// retry_count + status (the rootfs A/B view, which carries retry_count;
+// the bootloader view does not).
+func (c *Controller) rootfsSlotInfo() map[int]rootfsSlot {
+	out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "dump-slots-info")
+	if err != nil {
+		return nil
+	}
+	m := map[int]rootfsSlot{}
+	for _, line := range strings.Split(out, "\n") {
+		rest, ok := strings.CutPrefix(strings.TrimSpace(line), "slot:")
+		if !ok {
+			continue
+		}
+		fields := strings.Split(rest, ",") // "0, retry_count: 3, status: normal"
+		var num int
+		if _, err := fmt.Sscanf(strings.TrimSpace(fields[0]), "%d", &num); err != nil {
+			continue
+		}
+		var d rootfsSlot
+		for _, f := range fields[1:] {
+			f = strings.TrimSpace(f)
+			if v, ok := strings.CutPrefix(f, "retry_count:"); ok {
+				d.retry = strings.TrimSpace(v)
+			}
+			if v, ok := strings.CutPrefix(f, "status:"); ok {
+				d.status = strings.TrimSpace(v)
+			}
+		}
+		m[num] = d
+	}
+	return m
+}
+
+// SystemStatus reports system-wide (not per-slot) detail: the bootloader
+// version and the last capsule (ESRT) outcome.
+func (c *Controller) SystemStatus() []connector.KV {
+	var kv []connector.KV
+	blInfo, _ := runCmd(c.Nvbootctrl, "dump-slots-info")
+	for _, line := range strings.Split(blInfo, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Current version:"); ok {
+			kv = append(kv, connector.KV{Key: "bootloader version", Value: strings.TrimSpace(v)})
+			break
+		}
+	}
+	esrtDir := filepath.Dir(c.RootDir + ESRTStatusPath)
+	if b, err := os.ReadFile(filepath.Join(esrtDir, "last_attempt_status")); err == nil {
+		s := strings.TrimSpace(string(b))
+		if s == "0" {
+			s = "0 (success)"
+		}
+		kv = append(kv, connector.KV{Key: "last capsule status", Value: s})
+	}
+	return kv
+}

@@ -184,6 +184,45 @@ func (e *Engine) Rollback() (*RollbackResult, error) {
 	return res, nil
 }
 
+// Switch makes the other slot active for the next boot WITHOUT installing an
+// update — a permanent re-point (not a trial). The caller must reboot for it
+// to take effect.
+//
+// Refuses while an update is pending: a switch would clobber the trial
+// bookkeeping (commit or rollback that first). The target must hold a
+// bootable system — switching to an empty or broken slot has no automatic
+// recovery on boards without a trial countdown.
+func (e *Engine) Switch(target connector.Slot) error {
+	st, err := e.LoadState()
+	if err != nil {
+		return err
+	}
+	if st != nil {
+		return fmt.Errorf("an update is pending (%s, phase %s); commit or rollback before switching", st.ArtifactName, st.Phase)
+	}
+	cur, err := e.Conn.CurrentSlot()
+	if err != nil {
+		return err
+	}
+	if target == cur {
+		return fmt.Errorf("already running slot %s", cur)
+	}
+	if err := e.Conn.PrepareTarget(target); err != nil {
+		return fmt.Errorf("switch: prepare slot %s: %w", target, err)
+	}
+	// If SwapSlot fails here the active slot is unchanged (we still boot the
+	// current, committed slot), so there is no strand. PrepareTarget's reset
+	// of the target's health marker is not rolled back, but that is benign:
+	// it only matters when that slot is next booted, where we wanted it
+	// eligible anyway.
+	if err := e.Conn.SwapSlot(target, false); err != nil {
+		return fmt.Errorf("switch: %w", err)
+	}
+	slog.Info("switched active slot — reboot to boot it",
+		"from", cur.String(), "to", target.String(), "reboot_required", true)
+	return nil
+}
+
 // VerifyBoot is the boot-time verifier behind wendyos-update-verify.service
 // (internal verb, not part of the public CLI contract). If an update is
 // pending and the platform flagged the boot — or we are not running the

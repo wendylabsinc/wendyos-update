@@ -97,4 +97,28 @@ type Connector interface {
 	// never required for operation, and unreadable items are simply
 	// omitted. May return nil.
 	Diagnostics(verbose bool) map[string]string
+
+	// SlotStatus returns board-specific per-slot health for the `status`
+	// verb (rootfs health, retry budget, trial note). Display-only and
+	// best-effort: empty fields are omitted by the formatter.
+	SlotStatus(s Slot) SlotStatus
+
+	// SystemStatus returns ordered, system-wide status lines for the
+	// `status` verb (e.g. bootloader version, last capsule outcome) that
+	// are not per-slot. Display-only and best-effort; may return nil.
+	SystemStatus() []KV
+}
+
+// SlotStatus is display-only per-slot health from the connector. Empty
+// fields are omitted by the `status` formatter.
+type SlotStatus struct {
+	RootfsHealth string `json:"rootfs_health,omitempty"` // "normal" | "unbootable" | "" (n/a)
+	Retries      string `json:"retries,omitempty"`       // remaining trial attempts; "" if n/a
+	Note         string `json:"note,omitempty"`          // free-form per-slot note (e.g. trial state)
+}
+
+// KV is an ordered display key/value pair (system-wide status lines).
+type KV struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
 }

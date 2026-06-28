@@ -30,3 +30,24 @@ func (c *Controller) Diagnostics(verbose bool) map[string]string {
 	}
 	return d
 }
+
+// SlotStatus surfaces the only per-slot signal U-Boot exposes: the trial
+// state on the slot a trial is armed for. RPi has no persistent per-slot
+// rootfs health marker (unlike Tegra's RootfsStatusSlot), so RootfsHealth
+// stays empty and the formatter omits it.
+func (c *Controller) SlotStatus(s connector.Slot) connector.SlotStatus {
+	var st connector.SlotStatus
+	armed, _ := c.env.get(envUpgradeAvailable)
+	bootSlot, _ := c.env.get(envBootSlot)
+	if armed == "1" && bootSlot == slotEnvValue(s) {
+		st.Note = "trial armed"
+		if bc, err := c.env.get(envBootCount); err == nil && bc != "" {
+			st.Note = "trial armed (bootcount " + bc + ")"
+		}
+	}
+	return st
+}
+
+// SystemStatus has no system-wide A/B detail to add on U-Boot boards (the
+// bootloader is shared, not per-slot, and carries no version we read here).
+func (c *Controller) SystemStatus() []connector.KV { return nil }

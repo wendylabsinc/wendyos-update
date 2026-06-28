@@ -217,8 +217,10 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 type StatusInfo struct {
 	Connector   string            `json:"connector"`
 	CurrentSlot string            `json:"current_slot"`
+	Slots       []SlotState       `json:"slots,omitempty"`
+	System      []connector.KV    `json:"system,omitempty"`
 	Pending     *State            `json:"pending,omitempty"`
-	Diagnostics map[string]string `json:"diagnostics,omitempty"`
+	Diagnostics map[string]string `json:"diagnostics,omitempty"` // verbose raw dump only
 }
 
 func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
@@ -230,10 +232,35 @@ func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	var slots []SlotState
+	for _, s := range []connector.Slot{connector.SlotA, connector.SlotB} {
+		ss := SlotState{Slot: s.String(), Booted: s == cur}
+		if dev, err := e.Conn.PartitionFor(s); err == nil {
+			ss.Partition = dev
+		}
+		h := e.Conn.SlotStatus(s)
+		ss.RootfsHealth, ss.Retries, ss.Note = h.RootfsHealth, h.Retries, h.Note
+		// Distro/kernel: live for the booted slot; a read-only mount of the
+		// inactive slot otherwise (best-effort — empty if not root/unreadable).
+		if s == cur {
+			ss.Distro, ss.Kernel = currentDistro(), currentKernel()
+		} else {
+			ss.Distro, ss.Kernel = slotVersions(ss.Partition)
+		}
+		slots = append(slots, ss)
+	}
+
 	return &StatusInfo{
 		Connector:   e.Conn.Name(),
 		CurrentSlot: cur.String(),
+		Slots:       slots,
+		System:      e.Conn.SystemStatus(),
 		Pending:     st,
+		// Kept in --json unconditionally for back-compat (the contract is
+		// additive-only): the new slots/system are added alongside it, not
+		// in place of it. `verbose` only enriches the map with the raw
+		// EFI/slot snapshot; the human view shows it only under --verbose.
 		Diagnostics: e.Conn.Diagnostics(verbose),
 	}, nil
 }

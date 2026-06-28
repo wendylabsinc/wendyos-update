@@ -59,6 +59,48 @@ func (f *fakeConn) VerifyPlatformUpdate(blUpdate bool) error   { return f.verify
 func (f *fakeConn) AbortPlatformUpdate() error                 { f.aborted++; return nil }
 func (f *fakeConn) MarkGood() error                            { f.markGood++; return nil }
 func (f *fakeConn) Diagnostics(verbose bool) map[string]string { return nil }
+func (f *fakeConn) SlotStatus(s connector.Slot) connector.SlotStatus {
+	return connector.SlotStatus{}
+}
+func (f *fakeConn) SystemStatus() []connector.KV { return nil }
+
+// --- Switch ---
+
+func TestSwitch(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	if err := e.Switch(connector.SlotB); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	if len(f.prepared) != 1 || f.prepared[0] != connector.SlotB {
+		t.Fatalf("expected prepare B, got %v", f.prepared)
+	}
+	if len(f.swapped) != 1 || f.swapped[0] != connector.SlotB || f.swapStage[0] {
+		t.Fatalf("expected non-staging swap to B, got swapped=%v stage=%v", f.swapped, f.swapStage)
+	}
+}
+
+func TestSwitchRefusesWhenPending(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	if err := e.SaveState(&State{Schema: 1, Phase: PhaseSwapped, TargetSlot: int(connector.SlotB), ArtifactName: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Switch(connector.SlotB); err == nil {
+		t.Fatal("expected switch to refuse while an update is pending")
+	}
+	if len(f.swapped) != 0 {
+		t.Fatalf("must not swap when pending, got %v", f.swapped)
+	}
+}
+
+func TestSwitchRefusesSameSlot(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	if err := e.Switch(connector.SlotA); err == nil {
+		t.Fatal("expected refusal switching to the current slot")
+	}
+}
 
 // --- artifact builder ---
 

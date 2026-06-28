@@ -10,7 +10,8 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 | `install <url\|path>` | Full install of a `.wendy` artifact up to "reboot required": validate → write inactive slot → set pending state → prepare target slot → flip (or stage capsule) | **No** — caller reboots |
 | `commit` | Verify the running slot is the expected one, run platform verification (capsule cascade if applicable), finalize, clear pending state | No |
 | `rollback` | Explicit flip-back of an uncommitted update | No |
-| `status [--json] [--verbose]` | Current slot, pending state, plus a board `diagnostics` map (rootfs/bootloader slot + version, ESRT capsule status/version, per-slot rootfs health). `--verbose` adds a raw slot/EFI-variable snapshot for debugging (raw `RootfsStatusSlot` bytes, per-slot bootloader state, `BootChainFw*`, `OsIndications`). Best-effort/display-only. | No |
+| `switch <other\|a\|b>` | Make the other slot active for the next boot **without** an update — a permanent re-point (not a trial). Refuses while an update is pending, or when already on the target slot. The target must hold a bootable system. | **No** — caller reboots |
+| `status [--json] [--verbose]` | Per-slot state for **both** A/B — rootfs device + health, distro and kernel version, trial retries/notes — plus a system-wide section (bootloader version, last capsule status) and any pending update. `--verbose` adds a raw board `diagnostics` map for debugging (raw `RootfsStatusSlot` bytes, per-slot bootloader state, `BootChainFw*`, `OsIndications`). Inactive-slot distro/kernel are read via a best-effort read-only mount (root only; `unknown` otherwise). Best-effort/display-only. | No |
 | `mark-good` | Manual escape hatch: reset slot health vars, clear pending state | No |
 | `pack <flags>` | Host-side: build a `.wendy` artifact from a rootfs image (`--image --name --version --device... -o`); self-verifies by re-reading the output unless `--no-verify` | n/a |
 
@@ -28,9 +29,17 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 
 - **stdout**: machine-readable only. JSON lines:
   `{"phase":"download|write|verify|flip|commit","percent":0-100,"msg":"..."}`
-  `status --json` prints a single JSON object. The high-frequency progress
-  JSON is suppressed when stdout is a TTY (a human gets the stderr bar
-  instead); machine callers always pipe stdout, so they still receive it.
+  `status --json` prints a single JSON object:
+  `{connector, current_slot, slots[], system[], pending, diagnostics}`, where
+  each `slots[]` entry is `{slot, booted, partition, distro, kernel,
+  rootfs_health, retries, note}` (empty fields omitted) and `system[]` is an
+  ordered `{key, value}` list. `slots[]`/`system[]` are additive since v1; the
+  `diagnostics` map is still always present (back-compat), and `--verbose` only
+  enriches it with the raw EFI/slot snapshot. The human (non-JSON) view shows
+  the structured sections by default and the raw `diagnostics` only under
+  `--verbose`. The high-frequency progress JSON is suppressed when stdout is a
+  TTY (a human gets the stderr bar instead); machine callers always pipe
+  stdout, so they still receive it.
 - **stderr**: human-readable logs — never parse it. Format adapts to where
   the tool runs (`internal/log`):
   - **interactive terminal**: colored step lines + an in-place progress bar
@@ -83,3 +92,10 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
   the health.d gate. `Before=wendyos-update-boot-complete.target`.
 - `wendyos-update-boot-complete.target` — passive milestone reached once the
   running slot has been committed; downstream units may order after it.
+
+> **Deployment note (manual-commit model).** An image may *mask* these units
+> to require an explicit `wendyos-update commit` instead of auto-committing on
+> boot (WendyOS does this fleet-wide for the commit unit; the verify unit is
+> masked on Jetson until the boot-verify efivar fix is validated there). The
+> tool still ships and self-enables them by default — masking is an image
+> decision, see meta-edgeos.

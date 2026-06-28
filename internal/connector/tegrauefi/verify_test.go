@@ -60,7 +60,7 @@ func TestBootIsCompromised(t *testing.T) {
 	// engine's slot check + ESRT cascade stay authoritative.
 	t.Run("unexpected size is inconclusive", func(t *testing.T) {
 		c := testController(t)
-		c.Nvbootctrl = runningB() // booted B
+		c.Nvbootctrl = runningB()                                  // booted B
 		writeSlotVar(t, c, connector.SlotB, []byte{0x07, 0, 0, 0}) // 4 bytes, no status word
 		if got, _ := c.BootIsCompromised(); got {
 			t.Fatal("unexpected size: must be inconclusive (not compromised)")
