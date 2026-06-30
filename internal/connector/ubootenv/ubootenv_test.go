@@ -272,6 +272,58 @@ func TestSwapSlotInstallArmsTrial(t *testing.T) {
 	}
 }
 
+// SwapSlot must refuse to write the env when the U-Boot env file is not on a
+// mounted boot partition — fw_setenv would write a shadow copy on the rootfs
+// that the bootloader never reads, silently no-op'ing the slot change (the
+// /boot `nofail` trap, WDY-1768). A plain subdir of RootDir shares its st_dev
+// with its parent, so it is not a mountpoint.
+func TestSwapSlotRefusesWhenBootNotMounted(t *testing.T) {
+	env := newFakeEnv(map[string]string{envBootSlot: "0", envUpgradeAvailable: "0", envBootCount: "0"})
+	c := testController(t, env, connector.SlotA, true)
+
+	etc := filepath.Join(c.RootDir, "etc")
+	if err := os.MkdirAll(etc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(etc, "fw_env.config"),
+		[]byte("# comment\n/boot/uboot.env   0x0000   0x4000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(c.RootDir, "boot"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := c.SwapSlot(connector.SlotB, true); err == nil {
+		t.Fatal("SwapSlot armed a trial while /boot was not a mountpoint; want refusal")
+	}
+	if env.setCalls != 0 {
+		t.Fatalf("env written %d times despite the guard; want 0", env.setCalls)
+	}
+}
+
+// assertEnvWritable fails OPEN: a missing config or a raw block-device env has
+// no mount semantics to check, so it must not block.
+func TestAssertEnvWritableFailsOpen(t *testing.T) {
+	c := New()
+	c.RootDir = t.TempDir()
+
+	if err := c.assertEnvWritable(); err != nil {
+		t.Fatalf("missing fw_env.config should skip the guard, got: %v", err)
+	}
+
+	etc := filepath.Join(c.RootDir, "etc")
+	if err := os.MkdirAll(etc, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(etc, "fw_env.config"),
+		[]byte("/dev/mmcblk0p1 0x0000 0x4000\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.assertEnvWritable(); err != nil {
+		t.Fatalf("raw block-device env should skip the guard, got: %v", err)
+	}
+}
+
 func TestSwapSlotRollbackDisarms(t *testing.T) {
 	env := newFakeEnv(map[string]string{envBootSlot: "1", envUpgradeAvailable: "1", envBootCount: "2"})
 	c := testController(t, env, connector.SlotB, true)

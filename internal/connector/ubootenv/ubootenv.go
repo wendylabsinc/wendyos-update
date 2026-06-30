@@ -182,6 +182,76 @@ func envScript(vars map[string]string) string {
 	return b.String()
 }
 
+// fwEnvConfigPath is libubootenv's config (read by fw_setenv); it names where
+// the U-Boot environment lives. We parse it only to sanity-check the arm.
+const fwEnvConfigPath = "/etc/fw_env.config"
+
+// assertEnvWritable guards against a silently-ineffective env write. On RPi the
+// U-Boot env is a file on the FAT boot partition (fw_env.config -> /boot/uboot.env),
+// and the GPT fstab mounts /boot with `nofail` (WDY-1768). If /boot fails to
+// mount, fw_setenv happily writes a *copy* of uboot.env into the empty /boot
+// directory on the rootfs and exits 0 — but U-Boot reads the real FAT, so a
+// trial is never armed and the device just reboots the current slot (a silent
+// no-op OTA, indistinguishable from success to the caller).
+//
+// So: if the configured env is a regular file, refuse unless its parent
+// directory is a real mountpoint. Fail OPEN on anything we cannot determine
+// (unreadable config, raw block-device env, unstattable path) — fw_setenv
+// surfaces genuine errors itself; this only closes the specific shadow-file trap.
+func (c *Controller) assertEnvWritable() error {
+	data, err := os.ReadFile(filepath.Join(c.RootDir, fwEnvConfigPath))
+	if err != nil {
+		return nil // no/unreadable config: don't block (tests, non-RPi boards, ...)
+	}
+	dev := firstEnvField(string(data))
+	if dev == "" || strings.HasPrefix(dev, "/dev/") {
+		return nil // unparseable, or a raw block device (no mount semantics)
+	}
+	dir := filepath.Dir(dev)
+	mp, err := isMountpoint(filepath.Join(c.RootDir, dir))
+	if err != nil {
+		return nil // cannot stat (e.g. /boot absent): let fw_setenv decide
+	}
+	if !mp {
+		return fmt.Errorf("u-boot env %s is not on a mounted boot partition "+
+			"(is %s mounted?): refusing — fw_setenv would write a copy the bootloader never reads", dev, dir)
+	}
+	return nil
+}
+
+// firstEnvField returns the first whitespace-separated token of the first
+// non-blank, non-comment line of an fw_env.config (the device-or-file path).
+func firstEnvField(cfg string) string {
+	for _, line := range strings.Split(cfg, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		return strings.Fields(line)[0]
+	}
+	return ""
+}
+
+// isMountpoint reports whether path is a filesystem mountpoint, by the standard
+// test: its st_dev differs from its parent's. Linux-only (matches this file's
+// existing syscall use).
+func isMountpoint(path string) (bool, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return false, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	pst, ok2 := parent.Sys().(*syscall.Stat_t)
+	if !ok || !ok2 {
+		return false, fmt.Errorf("stat %s: unexpected FileInfo.Sys type", path)
+	}
+	return st.Dev != pst.Dev, nil
+}
+
 // --- slot ↔ partition resolution ---
 
 func rootfsSlotLabel(s connector.Slot) string {

@@ -47,6 +47,13 @@ func (c *Controller) PrepareTarget(s connector.Slot) error {
 //     is permanent, not a trial. Never a trial — rollback returns to a
 //     known-good slot.
 func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error {
+	// Refuse if the U-Boot env is not actually on the mounted boot partition:
+	// otherwise fw_setenv writes a shadow copy U-Boot never reads and the
+	// slot change silently no-ops (see assertEnvWritable).
+	if err := c.assertEnvWritable(); err != nil {
+		return fmt.Errorf("swap to slot %s: %w", s, err)
+	}
+
 	if stagePlatformUpdate {
 		slog.Info("swap: arming trial boot for slot", "slot", s.String())
 		if err := c.env.set(map[string]string{
