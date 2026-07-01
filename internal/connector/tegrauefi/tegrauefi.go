@@ -281,6 +281,18 @@ func (c *Controller) MarkGood() error {
 	if err != nil {
 		return fmt.Errorf("mark-good: %w", err)
 	}
+	// Confirm the running slot to the bootloader so it stops the trial-boot
+	// retry countdown (armed by PrepareTarget's retry-budget re-seed +
+	// set-active-boot-slot at install). WendyOS does NOT ship NVIDIA's
+	// nv_update_verifier.service, so this confirm is the tool's job — without
+	// it the firmware A/B fallback never completes: a committed slot is never
+	// confirmed, and a slot that dies before userspace is never distinguished
+	// from one that never confirmed. Leaving an un-booted slot unconfirmed is
+	// exactly what lets the firmware fall back to the previous slot. Mirrors
+	// the ubootenv connector disarming its U-Boot trial in MarkGood.
+	if out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "mark-boot-successful"); err != nil {
+		return fmt.Errorf("mark-good: nvbootctrl mark-boot-successful: %w (%s)", err, out)
+	}
 	if err := c.PrepareTarget(cur.Other()); err != nil {
 		return fmt.Errorf("mark-good: reset inactive slot: %w", err)
 	}

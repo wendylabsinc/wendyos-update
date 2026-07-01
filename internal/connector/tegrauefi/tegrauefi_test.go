@@ -3,6 +3,7 @@ package tegrauefi
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
@@ -21,12 +22,50 @@ func fakeNvbootctrl(t *testing.T, stdout string) string {
 	return path
 }
 
+// recordingNvbootctrl writes a stub that appends every invocation's args to
+// logPath, answers get-current-slot with currentSlotOut, and exits 0 for
+// anything else — so a test can assert which subcommands were run.
+func recordingNvbootctrl(t *testing.T, logPath, currentSlotOut string) string {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nvbootctrl")
+	script := "#!/bin/sh\n" +
+		"echo \"$*\" >> '" + logPath + "'\n" +
+		"case \"$*\" in *get-current-slot*) printf '%s' '" + currentSlotOut + "';; esac\n" +
+		"exit 0\n"
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func testController(t *testing.T) *Controller {
 	t.Helper()
 	c := New()
 	c.EfivarsDir = t.TempDir()
 	c.RootDir = t.TempDir()
 	return c
+}
+
+// MarkGood must confirm the running slot to the bootloader
+// (nvbootctrl mark-boot-successful) — the trial-boot confirm that stops the
+// firmware retry countdown. WendyOS does not ship NVIDIA's
+// nv_update_verifier.service, so if the tool skips this the firmware A/B
+// fallback never completes: committed slots are never confirmed, and a slot
+// that dies before userspace never triggers the intended fallback.
+func TestMarkGoodConfirmsBootToFirmware(t *testing.T) {
+	c := testController(t)
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n") // running slot A
+
+	if err := c.MarkGood(); err != nil {
+		t.Fatal(err)
+	}
+
+	data, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(data), "-t rootfs mark-boot-successful") {
+		t.Fatalf("MarkGood did not confirm the boot via nvbootctrl mark-boot-successful; calls were:\n%s", data)
+	}
 }
 
 func writeSlotVar(t *testing.T, c *Controller, s connector.Slot, content []byte) string {
