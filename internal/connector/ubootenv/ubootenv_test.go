@@ -117,31 +117,92 @@ func TestSlotEnvValue(t *testing.T) {
 	}
 }
 
-// On an MBR table (rpi3 — the BCM2837 bootrom can only boot MBR) lsblk reports
-// no PARTLABEL, so the slot identity rides on the ext4 FILESYSTEM label that
-// `wic --label rootfsA/rootfsB` writes. Resolution must fall back to it.
-func TestSlotResolutionMBRFilesystemLabel(t *testing.T) {
+// On an MBR table (rpi3 — the BCM2837 bootrom can only boot MBR) there is no
+// PARTLABEL, and an OTA rootfs write wipes the target's ext4 fs LABEL, so the
+// slot identity is the PARTITION NUMBER (rootfsA=p2, rootfsB=p3, per
+// boot-ab.cmd.in / rpi-wendy-ab-mbr.wks). Resolution must be by number and must
+// NOT depend on the fs label — proven here with the labels absent (the post-OTA
+// state), swapped, and present.
+func TestSlotResolutionMBRByPartitionNumber(t *testing.T) {
+	const a, b = "/dev/mmcblk0p2", "/dev/mmcblk0p3"
+	for _, tc := range []struct {
+		name           string
+		labelA, labelB string
+	}{
+		{"labels absent (post-OTA)", "", ""},
+		{"labels swapped (fs label must be ignored on MBR)", partlabelB, partlabelA},
+		{"factory labels present", partlabelA, partlabelB},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New()
+			c.env = newFakeEnv(nil)
+			c.RootDir = t.TempDir()
+			c.rootDeviceFn = func() (string, error) { return a, nil } // booted slot A (p2)
+			c.listPartsFn = func() ([]partInfo, error) {
+				return []partInfo{
+					{path: a, partlabel: "", label: tc.labelA, pkname: "mmcblk0"},
+					{path: b, partlabel: "", label: tc.labelB, pkname: "mmcblk0"},
+				}, nil
+			}
+			if got, err := c.CurrentSlot(); err != nil || got != connector.SlotA {
+				t.Fatalf("CurrentSlot = %v, %v; want A, nil (by partition number)", got, err)
+			}
+			if dev, err := c.PartitionFor(connector.SlotA); err != nil || dev != a {
+				t.Fatalf("PartitionFor(A) = %q, %v; want %q", dev, err, a)
+			}
+			if dev, err := c.PartitionFor(connector.SlotB); err != nil || dev != b {
+				t.Fatalf("PartitionFor(B) = %q, %v; want %q", dev, err, b)
+			}
+		})
+	}
+}
+
+// The exact post-OTA failure this fixes: after committing an OTA to slot B on
+// rpi3, the running root is p3 whose fs label was wiped by the rootfs write. CurrentSlot
+// must still report B (by partition number), or Commit/VerifyBoot would see a
+// false "firmware fallback" (running-slot != target-slot) and mark it failed.
+func TestCurrentSlotMBRCommittedSlotLabelStripped(t *testing.T) {
 	c := New()
 	c.env = newFakeEnv(nil)
 	c.RootDir = t.TempDir()
 	const a, b = "/dev/mmcblk0p2", "/dev/mmcblk0p3"
-	c.rootDeviceFn = func() (string, error) { return a, nil } // booted slot A
+	c.rootDeviceFn = func() (string, error) { return b, nil } // running the committed slot B
 	c.listPartsFn = func() ([]partInfo, error) {
-		// MBR: partlabel empty; identity is in the filesystem label.
 		return []partInfo{
-			{path: a, partlabel: "", label: partlabelA, pkname: "mmcblk0"},
-			{path: b, partlabel: "", label: partlabelB, pkname: "mmcblk0"},
+			{path: a, partlabel: "", label: partlabelA, pkname: "mmcblk0"}, // A keeps its factory label
+			{path: b, partlabel: "", label: "", pkname: "mmcblk0"},         // B: label wiped by the OTA write
 		}, nil
 	}
+	if got, err := c.CurrentSlot(); err != nil || got != connector.SlotB {
+		t.Fatalf("CurrentSlot = %v, %v; want B, nil (by partition number)", got, err)
+	}
+}
 
+// MBR analogue of TestSlotResolutionScopedToBootDisk with NO labels at all: a
+// second (USB) disk carrying its own p2/p3 must never shadow the booted SD.
+func TestSlotResolutionMBRScopedToBootDisk(t *testing.T) {
+	c := New()
+	c.env = newFakeEnv(nil)
+	c.RootDir = t.TempDir()
+	const sdA, sdB = "/dev/mmcblk0p2", "/dev/mmcblk0p3"
+	const usbA, usbB = "/dev/sda2", "/dev/sda3"
+	c.rootDeviceFn = func() (string, error) { return sdA, nil } // booted from SD
+	c.listPartsFn = func() ([]partInfo, error) {
+		return []partInfo{
+			{path: sdA, partlabel: "", label: "", pkname: "mmcblk0"},
+			{path: sdB, partlabel: "", label: "", pkname: "mmcblk0"},
+			{path: usbA, partlabel: "", label: "", pkname: "sda"},
+			{path: usbB, partlabel: "", label: "", pkname: "sda"},
+		}, nil
+	}
 	if got, err := c.CurrentSlot(); err != nil || got != connector.SlotA {
 		t.Fatalf("CurrentSlot = %v, %v; want A, nil", got, err)
 	}
-	if dev, err := c.PartitionFor(connector.SlotA); err != nil || dev != a {
-		t.Fatalf("PartitionFor(A) = %q, %v; want %q", dev, err, a)
+	if dev, err := c.PartitionFor(connector.SlotA); err != nil || dev != sdA {
+		t.Fatalf("PartitionFor(A) = %q, %v; want %q (SD, not USB)", dev, err, sdA)
 	}
-	if dev, err := c.PartitionFor(connector.SlotB); err != nil || dev != b {
-		t.Fatalf("PartitionFor(B) = %q, %v; want %q", dev, err, b)
+	if dev, err := c.PartitionFor(connector.SlotB); err != nil || dev != sdB {
+		t.Fatalf("PartitionFor(B) = %q, %v; want %q (SD, not USB)", dev, err, sdB)
 	}
 }
 
@@ -435,5 +496,74 @@ func TestRegisteredAndSelectable(t *testing.T) {
 	}
 	if conn.Name() != "ubootenv" {
 		t.Fatalf("selected connector Name = %q, want ubootenv", conn.Name())
+	}
+}
+
+// MarkGood calls CurrentSlot internally to pin boot_slot to the running slot. On
+// rpi3 the just-committed slot's fs label is wiped, so this must resolve by
+// partition number — otherwise the finalize step of Commit would fail on MBR.
+func TestMarkGoodMBRLabelStripped(t *testing.T) {
+	env := newFakeEnv(map[string]string{envBootSlot: "0", envUpgradeAvailable: "1", envBootCount: "1"})
+	c := New()
+	c.env = env
+	c.RootDir = t.TempDir()
+	const a, b = "/dev/mmcblk0p2", "/dev/mmcblk0p3"
+	c.rootDeviceFn = func() (string, error) { return b, nil } // running the committed slot B
+	c.listPartsFn = func() ([]partInfo, error) {
+		return []partInfo{
+			{path: a, partlabel: "", label: partlabelA, pkname: "mmcblk0"},
+			{path: b, partlabel: "", label: "", pkname: "mmcblk0"}, // wiped by OTA
+		}, nil
+	}
+	if err := c.MarkGood(); err != nil {
+		t.Fatalf("MarkGood: %v", err)
+	}
+	if env.vars[envBootSlot] != "1" {
+		t.Fatalf("boot_slot = %q, want 1 (pinned to running slot B by number)", env.vars[envBootSlot])
+	}
+	if env.vars[envUpgradeAvailable] != "0" || env.vars[envBootCount] != "0" {
+		t.Fatalf("MarkGood didn't finalize: upgrade=%q bootcount=%q",
+			env.vars[envUpgradeAvailable], env.vars[envBootCount])
+	}
+}
+
+func TestPartNum(t *testing.T) {
+	for _, tc := range []struct {
+		path, pkname string
+		want         int
+		ok           bool
+	}{
+		{"/dev/mmcblk0p2", "mmcblk0", 2, true},
+		{"/dev/mmcblk0p3", "mmcblk0", 3, true},
+		{"/dev/sda3", "sda", 3, true},
+		{"/dev/nvme0n1p3", "nvme0n1", 3, true},
+		{"/dev/mmcblk0", "mmcblk0", 0, false}, // whole disk: no partition number
+		{"/dev/sda", "sda", 0, false},
+		{"/dev/mmcblk0p3", "", 0, false}, // no parent disk known
+	} {
+		n, ok := partNum(tc.path, tc.pkname)
+		if ok != tc.ok || (ok && n != tc.want) {
+			t.Errorf("partNum(%q,%q) = %d,%v; want %d,%v", tc.path, tc.pkname, n, ok, tc.want, tc.ok)
+		}
+	}
+}
+
+// bootDiskHasPartlabel must decide MBR-vs-GPT PER DISK: a GPT USB drive beside an
+// MBR SD boot disk must NOT flip the boot disk onto the partlabel path.
+func TestBootDiskHasPartlabel(t *testing.T) {
+	gpt := []partInfo{{path: "/dev/mmcblk0p3", partlabel: partlabelA, pkname: "mmcblk0"}}
+	if !bootDiskHasPartlabel(gpt, "mmcblk0") {
+		t.Fatal("GPT boot disk (partlabel present) should report true")
+	}
+	mbr := []partInfo{{path: "/dev/mmcblk0p2", partlabel: "", label: partlabelA, pkname: "mmcblk0"}}
+	if bootDiskHasPartlabel(mbr, "mmcblk0") {
+		t.Fatal("MBR boot disk (no partlabel) should report false")
+	}
+	mixed := []partInfo{
+		{path: "/dev/sda1", partlabel: "ESP", pkname: "sda"},                          // GPT USB drive
+		{path: "/dev/mmcblk0p2", partlabel: "", label: partlabelA, pkname: "mmcblk0"}, // MBR SD boot disk
+	}
+	if bootDiskHasPartlabel(mixed, "mmcblk0") {
+		t.Fatal("a partlabel on a DIFFERENT disk must not make the MBR boot disk report true")
 	}
 }
