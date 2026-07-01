@@ -231,22 +231,42 @@ func (e *Engine) Switch(target connector.Slot) error {
 // fail the boot.
 func (e *Engine) VerifyBoot() error {
 	st, err := e.LoadState()
-	if err != nil || st == nil {
+	if err != nil {
+		// State unreadable, but THIS boot reached the verifier: confirm it,
+		// or a firmware boot-watchdog would reboot a working system over a
+		// userspace bookkeeping problem.
+		e.confirmBoot()
 		return err
 	}
-	if st.Phase != PhaseSwapped {
+
+	if st == nil || st.Phase != PhaseSwapped {
+		// No trial in flight (or one already marked failed/written): the
+		// running slot is the committed system — confirm the boot.
+		e.confirmBoot()
 		return nil
 	}
 
 	failed := false
+	confirm := true
 	if compromised, err := e.Conn.BootIsCompromised(); err == nil && compromised {
 		failed = true
+		// The firmware flagged the slot we are RUNNING: do not confirm —
+		// the retry countdown is what makes the firmware abandon it.
+		confirm = false
 		slog.Warn("boot verifier: platform flagged a slot as unhealthy")
 	}
 	if cur, err := e.Conn.CurrentSlot(); err == nil && int(cur) != st.TargetSlot {
 		failed = true
+		// Fallback: we are running the known-good ORIGIN slot, not the
+		// trial target. The deployment is dead, but this boot is fine —
+		// it must be confirmed or the watchdog reboots the only bootable
+		// system left.
 		slog.Warn("boot verifier: firmware fallback detected",
 			"running", cur.String(), "target", connector.Slot(st.TargetSlot).String())
+	}
+
+	if confirm {
+		e.confirmBoot()
 	}
 
 	if failed {
@@ -261,6 +281,24 @@ func (e *Engine) VerifyBoot() error {
 	}
 	slog.Info("boot verifier: pending update looks healthy", "artifact", st.ArtifactName)
 	return nil
+}
+
+// confirmBoot tells firmware with a boot-validation watchdog that this boot
+// succeeded (connector.BootConfirmer). A healthy trial boot is confirmed too:
+// the watchdog cannot be left running across a manual-commit window, and
+// post-userspace health remains commit/rollback's job (the stock L4T split —
+// nv_update_verifier confirms every boot, Mender decides the deployment).
+// Best-effort: the verifier must never fail the boot.
+func (e *Engine) confirmBoot() {
+	bc, ok := e.Conn.(connector.BootConfirmer)
+	if !ok {
+		return
+	}
+	if err := bc.ConfirmBoot(); err != nil {
+		slog.Warn("boot verifier: could not confirm the boot to the firmware", "err", err)
+		return
+	}
+	slog.Info("boot verifier: confirmed boot to the firmware")
 }
 
 // appendInstalled records a committed artifact, capping the history.

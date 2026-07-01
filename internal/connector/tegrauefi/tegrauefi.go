@@ -290,14 +290,28 @@ func (c *Controller) MarkGood() error {
 	// from one that never confirmed. Leaving an un-booted slot unconfirmed is
 	// exactly what lets the firmware fall back to the previous slot. Mirrors
 	// the ubootenv connector disarming its U-Boot trial in MarkGood.
-	if out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "mark-boot-successful"); err != nil {
-		return fmt.Errorf("mark-good: nvbootctrl mark-boot-successful: %w (%s)", err, out)
+	if err := c.ConfirmBoot(); err != nil {
+		return fmt.Errorf("mark-good: %w", err)
 	}
 	if err := c.PrepareTarget(cur.Other()); err != nil {
 		return fmt.Errorf("mark-good: reset inactive slot: %w", err)
 	}
 	if err := os.Remove(c.bootAttemptedPath()); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("mark-good: clear boot_attempted: %w", err)
+	}
+	return nil
+}
+
+// ConfirmBoot implements connector.BootConfirmer: `nvbootctrl -t rootfs
+// mark-boot-successful` tells UEFI this boot succeeded, stopping the rootfs
+// A/B boot-validation watchdog and retry countdown for the running slot.
+// With rootfs redundancy enabled UEFI arms that watchdog on EVERY boot (not
+// just trials) and reboots the SoC minutes into userspace unless something
+// confirms; stock L4T's nv_update_verifier.service did this, and WendyOS
+// does not ship it — so the boot verifier calls this each healthy boot.
+func (c *Controller) ConfirmBoot() error {
+	if out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "mark-boot-successful"); err != nil {
+		return fmt.Errorf("confirm boot: nvbootctrl mark-boot-successful: %w (%s)", err, out)
 	}
 	return nil
 }
