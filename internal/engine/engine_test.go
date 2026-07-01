@@ -27,12 +27,20 @@ type fakeConn struct {
 	swapStage []bool
 	markGood  int
 	aborted   int
+	confirmed int
 
 	failSwap    bool
 	failPrepare bool
 	compromised bool
 	verifyErr   error
 }
+
+// fakeConn implements the optional connector.BootConfirmer (like tegrauefi).
+func (f *fakeConn) ConfirmBoot() error { f.confirmed++; return nil }
+
+// plainConn hides fakeConn's ConfirmBoot behind the plain Connector interface
+// — a board with no per-boot confirm (ubootenv), for the type-assertion path.
+type plainConn struct{ connector.Connector }
 
 func (f *fakeConn) Name() string                         { return "fake" }
 func (f *fakeConn) CurrentSlot() (connector.Slot, error) { return f.cur, nil }

@@ -47,6 +47,23 @@ func testController(t *testing.T) *Controller {
 	return c
 }
 
+// ConfirmBoot is the per-boot confirm behind connector.BootConfirmer: it must
+// run `nvbootctrl -t rootfs mark-boot-successful`, which stops UEFI's rootfs
+// A/B boot-validation watchdog and retry countdown for the running slot.
+func TestConfirmBootRunsMarkBootSuccessful(t *testing.T) {
+	c := testController(t)
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n")
+
+	if err := c.ConfirmBoot(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(logPath)
+	if !strings.Contains(string(data), "-t rootfs mark-boot-successful") {
+		t.Fatalf("ConfirmBoot did not run mark-boot-successful; calls were:\n%s", data)
+	}
+}
+
 // MarkGood must confirm the running slot to the bootloader
 // (nvbootctrl mark-boot-successful) — the trial-boot confirm that stops the
 // firmware retry countdown. WendyOS does not ship NVIDIA's

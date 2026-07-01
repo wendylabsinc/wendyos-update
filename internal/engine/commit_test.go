@@ -204,3 +204,88 @@ func TestVerifyBootNoPending(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// --- per-boot confirm (connector.BootConfirmer) ---
+//
+// On boards where the firmware arms a boot-validation watchdog every boot
+// (Jetson rootfs A/B: UEFI reboots the SoC unless userspace confirms the boot
+// — stock L4T's nv_update_verifier.service, which WendyOS does not ship), the
+// verify unit must confirm every boot that reaches it. A boot that dies
+// earlier is never confirmed, so the watchdog + retry budget still deliver
+// firmware fallback; post-userspace health remains commit/rollback's job.
+
+// No pending update — the everyday boot — must be confirmed, or the watchdog
+// reboots a perfectly healthy system every few minutes.
+func TestVerifyBootConfirmsNoPending(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	if err := e.VerifyBoot(); err != nil {
+		t.Fatal(err)
+	}
+	if f.confirmed != 1 {
+		t.Fatalf("healthy no-pending boot not confirmed to the firmware (confirmed=%d)", f.confirmed)
+	}
+}
+
+// A healthy trial boot (running the target slot, not compromised) is also
+// confirmed: the firmware watchdog cannot be left running across a manual
+// commit window. Rollback stays possible afterwards via the explicit verbs.
+func TestVerifyBootConfirmsHealthyTrial(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotB}
+	e := testEngine(t, f)
+	e.SaveState(swappedState())
+	if err := e.VerifyBoot(); err != nil {
+		t.Fatal(err)
+	}
+	if f.confirmed != 1 {
+		t.Fatalf("healthy trial boot not confirmed (confirmed=%d)", f.confirmed)
+	}
+}
+
+// A compromised boot must NOT be confirmed — the retry countdown is the
+// mechanism that makes the firmware abandon this slot.
+func TestVerifyBootNoConfirmWhenCompromised(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotB, compromised: true}
+	e := testEngine(t, f)
+	e.SaveState(swappedState())
+	if err := e.VerifyBoot(); err != nil {
+		t.Fatal(err)
+	}
+	if f.confirmed != 0 {
+		t.Fatalf("compromised boot was confirmed (confirmed=%d)", f.confirmed)
+	}
+}
+
+// Firmware fallback (running the origin, not the trial target): the pending
+// deployment is marked failed, but the slot we are actually running is the
+// known-good origin — it must be confirmed or the watchdog reboots the only
+// bootable system we have left.
+func TestVerifyBootConfirmsOriginAfterFallback(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA} // update targeted B, we run A
+	e := testEngine(t, f)
+	e.SaveState(swappedState())
+	if err := e.VerifyBoot(); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := e.LoadState()
+	if st == nil || st.Phase != PhaseFailed {
+		t.Fatalf("fallback not marked failed: %+v", st)
+	}
+	if f.confirmed != 1 {
+		t.Fatalf("origin slot not confirmed after fallback (confirmed=%d)", f.confirmed)
+	}
+}
+
+// A connector without the optional BootConfirmer (ubootenv: U-Boot's own
+// bootcount machinery handles trials, no watchdog) is a clean no-op.
+func TestVerifyBootNoConfirmerIsNoop(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	e.Conn = plainConn{f}
+	if err := e.VerifyBoot(); err != nil {
+		t.Fatal(err)
+	}
+	if f.confirmed != 0 {
+		t.Fatalf("ConfirmBoot reached through a connector that does not expose it (confirmed=%d)", f.confirmed)
+	}
+}

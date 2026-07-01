@@ -109,6 +109,22 @@ type Connector interface {
 	SystemStatus() []KV
 }
 
+// BootConfirmer is an optional extension for boards whose firmware arms a
+// boot-validation watchdog on EVERY boot and reboots the SoC unless
+// userspace confirms it (Jetson rootfs A/B: UEFI decrements the slot's
+// retry budget per attempt; stock L4T stops the countdown from
+// nv_update_verifier.service, which WendyOS does not ship). The boot
+// verifier calls ConfirmBoot on every boot it deems healthy; a boot that
+// dies before the verifier is never confirmed, so the firmware retry/
+// fallback machinery still abandons the slot on its own.
+//
+// Boards whose trial machinery must stay armed until an explicit commit
+// (ubootenv: U-Boot bootcount, no watchdog) simply do not implement this.
+type BootConfirmer interface {
+	// ConfirmBoot tells the firmware the current boot succeeded.
+	ConfirmBoot() error
+}
+
 // SlotStatus is display-only per-slot health from the connector. Empty
 // fields are omitted by the `status` formatter.
 type SlotStatus struct {
