@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -217,12 +218,19 @@ func newEngine() (*engine.Engine, error) {
 		return nil, err
 	}
 	stateDir := cfg.StateDir
+	stateMount := ""
 	if stateDir == "" {
 		stateDir = engine.StateDir
+		// The default state lives on the dedicated /data partition. Gate commit
+		// on that partition being mounted so an unmounted /data can never read
+		// as "nothing to commit" and silently skip a pending update. A config
+		// override opts out: its backing mount (if any) is unknown to us.
+		stateMount = filepath.Dir(engine.StateDir)
 	}
 	return &engine.Engine{
 		Conn:           conn,
 		StateDir:       stateDir,
+		StateMount:     stateMount,
 		DeviceTypePath: cfg.DeviceTypePath, // "" -> engine default
 		HooksDir:       cfg.HooksDir,       // "" -> engine default (/etc/wendyos-update)
 		HealthDir:      cfg.HealthDir,      // legacy health-phase override

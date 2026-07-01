@@ -1,14 +1,22 @@
 [Unit]
 Description=wendyos-update auto-commit (finalize a pending update after a healthy boot)
 # Network-independent gate. Order after the verifier (firmware slot
-# health + double-boot) and /data (where the pending state lives), NOT
-# after multi-user.target — that pulls in network-online (radvd,
-# agent-updater) and would block commit on the network coming up. The
-# userspace health policy lives in the commit verb's health.d hooks
-# (/etc/wendyos-update/health.d/), which products extend; with no hooks the
-# firmware-level verify is the baseline gate.
-After=wendyos-update-verify.service data.mount
+# health + double-boot), NOT after multi-user.target — that pulls in
+# network-online (radvd, agent-updater) and would block commit on the
+# network coming up. The userspace health policy lives in the commit verb's
+# health.d hooks (/etc/wendyos-update/health.d/), which products extend; with
+# no hooks the firmware-level verify is the baseline gate.
+After=wendyos-update-verify.service
 Wants=wendyos-update-verify.service
+# HARD gate on /data (where the pending state lives): RequiresMountsFor pulls
+# in the mount unit, orders after it, AND requires it — so commit never runs
+# before /data is mounted, and is skipped (not falsely "succeeded") if the
+# mount fails. A bare After=data.mount only orders; commit could still run
+# against an unmounted /data, read the empty shadow dir on the rootfs as
+# "nothing to commit", and reach boot-complete with the update unfinalized.
+# The commit verb re-checks this itself (engine assertStateMounted) for manual
+# invocations and the shadow-dir case.
+RequiresMountsFor=/data
 # Reaching boot-complete.target means the running slot was committed.
 Before=wendyos-update-boot-complete.target
 

@@ -87,9 +87,13 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
   checks slot-health efivars + double-boot detection; marks a pending
   deployment failed if the platform flagged the boot.
 - `wendyos-update-commit.service` — oneshot, ordered after
-  `wendyos-update-verify.service` + `data.mount` (NOT `multi-user.target`,
-  to stay network-independent); runs `wendyos-update commit`, which applies
-  the health.d gate. `Before=wendyos-update-boot-complete.target`.
+  `wendyos-update-verify.service` (NOT `multi-user.target`, to stay
+  network-independent) and hard-gated on `/data` via `RequiresMountsFor=/data`
+  (the pending state lives there); runs `wendyos-update commit`, which applies
+  the health.d gate. `Before=wendyos-update-boot-complete.target`. The commit
+  verb independently refuses to act unless the state partition is mounted, so
+  an unmounted `/data` can never read as "nothing to commit" and silently skip
+  finalizing a pending update.
 - `wendyos-update-boot-complete.target` — passive milestone reached once the
   running slot has been committed; downstream units may order after it.
 

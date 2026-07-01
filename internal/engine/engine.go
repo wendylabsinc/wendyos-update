@@ -40,6 +40,13 @@ type Progress func(phase string, percent int)
 type Engine struct {
 	Conn           connector.Connector
 	StateDir       string // default: StateDir const
+	// StateMount, when non-empty, is the mountpoint the state partition (/data)
+	// must occupy before commit will act. Guards the silent no-op where an
+	// unmounted /data reads as an empty shadow dir on the rootfs: LoadState
+	// finds nothing, commit reports success, boot-complete is reached, and a
+	// real pending update is never finalized. Empty disables the check (tests,
+	// dev, StateDir overrides off /data). See Commit / assertStateMounted.
+	StateMount     string
 	DeviceTypePath string // default: DefaultDeviceTypePath
 	HooksDir       string // default: DefaultHooksDir; root for the per-phase hook dirs
 	HealthDir      string // legacy override for the health phase only (config health_dir)

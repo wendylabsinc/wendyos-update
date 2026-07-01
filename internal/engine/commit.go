@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
@@ -34,6 +35,14 @@ const installedHistoryCap = 10
 // confirm we are running the target slot, run platform verification,
 // mark the platform good, clear the pending state, record history.
 func (e *Engine) Commit() error {
+	// Never decide anything about a pending update while the state partition
+	// (/data) is not mounted: LoadState would read the empty shadow directory
+	// on the rootfs, report "nothing to commit", and let boot-complete be
+	// reached with a real pending update left unfinalized (a silent no-op).
+	if err := e.assertStateMounted(); err != nil {
+		return err
+	}
+
 	st, err := e.LoadState()
 	if err != nil {
 		return err
@@ -122,6 +131,56 @@ func (e *Engine) Commit() error {
 	e.runAdvisoryHooks(HookPostCommit, env)
 	slog.Info("commit: done", "artifact", st.ArtifactName, "slot", connector.Slot(st.TargetSlot).String())
 	return nil
+}
+
+// assertStateMounted refuses to act on the pending state unless the state
+// partition is actually mounted. StateDir lives on a dedicated partition
+// (/data); if that partition is not mounted, StateDir resolves to an empty
+// shadow directory on the rootfs and LoadState there reads as "no pending
+// update" — so commit would exit 2 (success), boot-complete.target would be
+// reached, and a real pending update sitting on the unmounted /data would
+// never be finalized (nor would MarkGood re-seed the trial-boot retry budget,
+// so the board rolls back and reboot-loops). Same silent-no-op class as the
+// ubootenv /boot shadow-file trap (8bba71c).
+//
+// Disabled (returns nil) when StateMount is empty: tests and dev runs that
+// point StateDir off /data have no partition to gate on. Fails CLOSED when the
+// mount root cannot be stat'd — the opposite of the ubootenv guard, because
+// here an undeterminable /data means the exact state we must not trust.
+func (e *Engine) assertStateMounted() error {
+	if e.StateMount == "" {
+		return nil
+	}
+	mp, err := isMountpoint(e.StateMount)
+	if err != nil {
+		return fmt.Errorf("commit: state partition %s is unavailable (%w); refusing to commit", e.StateMount, err)
+	}
+	if !mp {
+		return fmt.Errorf("commit: state partition %s is not mounted; refusing to commit "+
+			"(an unmounted state partition reads as \"nothing to commit\" and would silently "+
+			"skip finalizing a pending update)", e.StateMount)
+	}
+	return nil
+}
+
+// isMountpoint reports whether path is a filesystem mountpoint, by the standard
+// test: its st_dev differs from its parent's. Linux is the only target; the
+// syscall.Stat_t.Dev field also exists on the dev hosts this builds on.
+func isMountpoint(path string) (bool, error) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false, err
+	}
+	parent, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		return false, err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	pst, ok2 := parent.Sys().(*syscall.Stat_t)
+	if !ok || !ok2 {
+		return false, fmt.Errorf("stat %s: unexpected FileInfo.Sys type", path)
+	}
+	return st.Dev != pst.Dev, nil
 }
 
 // RollbackResult tells the caller whether a reboot is needed to finish

@@ -28,6 +28,46 @@ func TestCommitNothingPending(t *testing.T) {
 	}
 }
 
+// Commit must refuse when the state partition is configured (StateMount) but
+// not actually mounted. An unmounted /data resolves to an empty shadow
+// directory on the rootfs, so LoadState finds no state and Commit would return
+// ErrNothingToCommit (exit 2 = success) — boot-complete.target is reached while
+// the real pending update, sitting on the still-unmounted /data, is never
+// finalized (and MarkGood never re-seeds the trial-boot retry budget, so the
+// board rolls back and reboot-loops). Same silent-no-op class as the ubootenv
+// /boot shadow-file trap (8bba71c). A plain directory shares its parent's
+// st_dev, so it is not a mountpoint.
+func TestCommitRefusesWhenStatePartitionUnmounted(t *testing.T) {
+	e := testEngine(t, &fakeConn{cur: connector.SlotA})
+	e.StateMount = e.StateDir // a real dir that is NOT its own mountpoint
+	if err := os.MkdirAll(e.StateMount, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := e.Commit()
+	if err == nil {
+		t.Fatal("Commit proceeded with an unmounted state partition; want refusal")
+	}
+	if errors.Is(err, ErrNothingToCommit) {
+		t.Fatalf("Commit reported nothing-to-commit (exit 2 = success) with the state "+
+			"partition unmounted — the silent no-op we must prevent: %v", err)
+	}
+}
+
+// A state partition path that does not exist at all is "not available", so the
+// guard fails CLOSED (refuses) — the deliberate inverse of the ubootenv env
+// guard, because here an undeterminable /data is exactly the state we must not
+// treat as "nothing to commit".
+func TestCommitRefusesWhenStatePartitionAbsent(t *testing.T) {
+	e := testEngine(t, &fakeConn{cur: connector.SlotA})
+	e.StateMount = filepath.Join(e.StateDir, "does-not-exist")
+
+	err := e.Commit()
+	if err == nil || errors.Is(err, ErrNothingToCommit) {
+		t.Fatalf("Commit did not refuse when the state partition path is absent: %v", err)
+	}
+}
+
 func TestCommitHappyPath(t *testing.T) {
 	f := &fakeConn{cur: connector.SlotB} // running the target slot
 	e := testEngine(t, f)
