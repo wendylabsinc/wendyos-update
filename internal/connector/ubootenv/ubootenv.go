@@ -36,6 +36,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -65,6 +66,28 @@ const (
 	partlabelA = "rootfsA"
 	partlabelB = "rootfsB"
 )
+
+// On an MBR table (rpi3) there are no GPT partlabels, and an OTA rootfs write
+// overwrites the target filesystem — including its ext4 label — so NEITHER the
+// partlabel nor the fs label is a slot identity that survives an update. The one
+// thing that does survive is the PARTITION NUMBER (the MBR partition table is
+// never rewritten by an OTA). Resolve A/B by number there, matching the
+// authoritative mapping in the boot script
+// (recipes-bsp/rpi-u-boot-scr/files/boot-ab.cmd.in) and the image layout
+// (files/wic/rpi-wendy-ab-mbr.wks): slot 0 = rootfsA = partition 2,
+// slot 1 = rootfsB = partition 3, on the boot disk.
+const (
+	mbrRootfsPartA = 2
+	mbrRootfsPartB = 3
+)
+
+// mbrPartForSlot maps a slot to its MBR rootfs partition number (see above).
+func mbrPartForSlot(s connector.Slot) int {
+	if s == connector.SlotB {
+		return mbrRootfsPartB
+	}
+	return mbrRootfsPartA
+}
 
 func init() {
 	connector.Register("ubootenv", connector.Factory{
@@ -102,8 +125,8 @@ type Controller struct {
 	RootDir string // prefix for /dev lookups (tests); "" in production
 
 	env          envStore
-	rootDeviceFn func() (string, error)       // block device mounted at /
-	listPartsFn  func() ([]partInfo, error)   // block partitions (lsblk)
+	rootDeviceFn func() (string, error)     // block device mounted at /
+	listPartsFn  func() ([]partInfo, error) // block partitions (lsblk)
 }
 
 func New() *Controller {
@@ -281,6 +304,38 @@ func effectiveLabel(p partInfo) string {
 	return p.label
 }
 
+// bootDiskHasPartlabel reports whether ANY partition on the given disk carries a
+// GPT PARTLABEL. On GPT boards (rpi4/rpi5) every rootfs partition does, so slots
+// resolve by partlabel exactly as before. On an MBR table (rpi3) none do, so we
+// resolve by partition number instead (mbrRootfsPart*) — the only slot identity
+// that survives an OTA that rewrites the rootfs filesystem and its fs label.
+// Decided once per disk so a mixed-signal partition can never be partially
+// resolved by number.
+func bootDiskHasPartlabel(parts []partInfo, disk string) bool {
+	for _, p := range parts {
+		if p.pkname == disk && p.partlabel != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// partNum extracts a partition's number from its device path given the parent
+// disk kernel name: ("/dev/mmcblk0p3","mmcblk0")->3, ("/dev/sda3","sda")->3,
+// ("/dev/nvme0n1p3","nvme0n1")->3. ok=false if it cannot be parsed.
+func partNum(path, pkname string) (int, bool) {
+	if pkname == "" {
+		return 0, false
+	}
+	suffix := strings.TrimPrefix(strings.TrimPrefix(path, "/dev/"), pkname)
+	suffix = strings.TrimPrefix(suffix, "p") // mmcblk0p3 / nvme0n1p3 (sdaN has no 'p')
+	n, err := strconv.Atoi(suffix)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
 // lsblkParts lists block partitions with their partlabel, fs label and parent
 // disk. -P (KEY="value") is used over -r because it is robust to empty columns
 // (partitions with no partlabel, e.g. every partition on an MBR table).
@@ -347,24 +402,44 @@ func (c *Controller) bootDisk(parts []partInfo) (string, error) {
 	return "", fmt.Errorf("running root %q not found among partitions", root)
 }
 
-// PartitionFor resolves a slot's rootfs block device by GPT partlabel, scoped
-// to the disk we booted from (see bootDisk). The wks labels the two slots
-// rootfsA/rootfsB and they never move.
+// PartitionFor resolves a slot's rootfs block device, scoped to the disk we
+// booted from (see bootDisk):
 //
-//  1. lsblk scan restricted to the boot disk — the unambiguous, normal path.
-//  2. /dev/disk/by-partlabel/rootfs{A,B} (GPT) then /dev/disk/by-label/rootfs{A,B}
-//     (MBR fs label) symlink — fallback when the running root is not listed
-//     (early boot / unit tests). These symlinks are ambiguous when a second
-//     disk carries the same labels, so they are only the fallback.
+//   - GPT (rpi4/5): by GPT partlabel (rootfsA/rootfsB) — stable across OTA.
+//   - MBR (rpi3): by partition number (rootfsA=p2, rootfsB=p3), because an OTA
+//     rootfs write wipes the target's ext4 label and MBR has no partlabel, so
+//     the number is the only durable identity (mbrRootfsPart* / boot-ab.cmd.in).
+//
+// Falls back to the /dev/disk/by-partlabel then by-label symlinks only when the
+// running root is not listed by lsblk (early boot / unit tests); those symlinks
+// are ambiguous across a second disk, so they are the last resort — and on MBR
+// the number branch returns before reaching them (the by-label symlink is a
+// factory-state-only net that would miss, correctly, post-OTA).
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
 	label := rootfsSlotLabel(s)
 
 	if parts, err := c.listPartsFn(); err == nil {
 		if disk, err := c.bootDisk(parts); err == nil && disk != "" {
-			for _, p := range parts {
-				if effectiveLabel(p) == label && p.pkname == disk {
-					return p.path, nil
+			if bootDiskHasPartlabel(parts, disk) {
+				// GPT: resolve by partlabel. On a miss, fall through to the
+				// symlink fallback below (unchanged behavior).
+				for _, p := range parts {
+					if effectiveLabel(p) == label && p.pkname == disk {
+						return p.path, nil
+					}
 				}
+			} else {
+				// MBR: resolve by partition number, scoped to the boot disk.
+				want := mbrPartForSlot(s)
+				for _, p := range parts {
+					if p.pkname != disk {
+						continue
+					}
+					if n, ok := partNum(p.path, p.pkname); ok && n == want {
+						return p.path, nil
+					}
+				}
+				return "", fmt.Errorf("partition for slot %s: no partition %d on MBR boot disk %q", s, want, disk)
 			}
 		}
 	}
@@ -391,20 +466,32 @@ func (c *Controller) CurrentSlot() (connector.Slot, error) {
 	}
 	root = canon(root)
 
-	// Read the running root partition's OWN label — unambiguous even when a
-	// second disk carries the same rootfsA/rootfsB labels. effectiveLabel uses
-	// the GPT partlabel (rpi4/5) or the fs label (rpi3/MBR).
+	// Identify the running root partition by its OWN device (unambiguous even when
+	// a second disk carries the same rootfsA/rootfsB). On GPT (rpi4/5) by its
+	// partlabel; on MBR (rpi3) by its partition number, because the OTA rootfs
+	// write wipes the just-committed slot's fs label (see bootDiskHasPartlabel /
+	// mbrRootfsPart*).
 	if parts, err := c.listPartsFn(); err == nil {
 		for _, p := range parts {
 			if canon(p.path) != root {
 				continue
 			}
-			switch effectiveLabel(p) {
-			case partlabelA:
-				return connector.SlotA, nil
-			case partlabelB:
-				return connector.SlotB, nil
+			if bootDiskHasPartlabel(parts, p.pkname) {
+				switch effectiveLabel(p) {
+				case partlabelA:
+					return connector.SlotA, nil
+				case partlabelB:
+					return connector.SlotB, nil
+				}
+			} else if n, ok := partNum(p.path, p.pkname); ok {
+				switch n {
+				case mbrRootfsPartA:
+					return connector.SlotA, nil
+				case mbrRootfsPartB:
+					return connector.SlotB, nil
+				}
 			}
+			break // running root found; its identity didn't resolve — fall through
 		}
 	}
 
