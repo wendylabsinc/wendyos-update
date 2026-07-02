@@ -243,6 +243,37 @@ func TestInstallRejectsWrongDevice(t *testing.T) {
 	}
 }
 
+// Capacity pre-flight: a payload larger than the target slot is rejected up
+// front (nothing written), instead of failing mid-write at the partition
+// boundary. A real block device caps writes at its size; a regular file does
+// not, so the slot is simulated by truncating f.dev just below the payload.
+func TestInstallRejectsOversizedPayload(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	art, image := buildArtifact(t, nil)
+
+	// Slot one byte smaller than the payload -> must reject before writing.
+	if err := os.Truncate(f.dev, int64(len(image)-1)); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := e.Install(bytes.NewReader(art))
+	var rej *RejectError
+	if !errors.As(err, &rej) {
+		t.Fatalf("want RejectError (oversized payload), got %v", err)
+	}
+	// device untouched (WriteImage never ran), no state, no connector calls
+	if got, _ := os.ReadFile(f.dev); len(got) != len(image)-1 {
+		t.Fatalf("device written despite reject: %d bytes (want %d)", len(got), len(image)-1)
+	}
+	if st, _ := e.LoadState(); st != nil {
+		t.Fatalf("state persisted despite reject: %+v", st)
+	}
+	if len(f.swapped) != 0 || len(f.prepared) != 0 {
+		t.Fatalf("connector mutated despite reject: prepared=%v swapped=%v", f.prepared, f.swapped)
+	}
+}
+
 func TestInstallRejectsToolVersionGate(t *testing.T) {
 	f := &fakeConn{cur: connector.SlotA}
 	e := testEngine(t, f)

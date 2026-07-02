@@ -105,6 +105,16 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 		return nil, err
 	}
 
+	// Capacity pre-flight: the on-device A/B slot is fixed at flash time and is
+	// never re-partitioned, so a payload larger than the slot cannot be
+	// installed. Reject up front (nothing written) rather than failing mid-write
+	// at the partition boundary. Fail-open when the capacity can't be read — the
+	// boundary write error remains the backstop. (The image build also pins the
+	// payload to the slot size; this protects fielded devices too.)
+	if capBytes, cerr := blockdev.DeviceCapacity(dev); cerr == nil && capBytes > 0 && m.Payload.Size > capBytes {
+		return nil, reject("rootfs payload is %d bytes but target slot %s holds only %d bytes; the image is too large for the on-device A/B slot", m.Payload.Size, dev, capBytes)
+	}
+
 	// pre-install gate: products may refuse the update before anything is
 	// written (custom compatibility / free-space / policy). A non-zero exit
 	// aborts the install with nothing changed.

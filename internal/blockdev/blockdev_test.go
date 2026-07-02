@@ -28,6 +28,29 @@ func target(t *testing.T) string {
 	return p
 }
 
+// DeviceCapacity reports the byte size of a device/file via seek-to-end
+// (a partition block device reports its exact size the same way). Used by
+// the install capacity pre-flight to reject an oversized payload up front.
+func TestDeviceCapacity(t *testing.T) {
+	p := target(t)
+	if err := os.Truncate(p, 8192); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DeviceCapacity(p)
+	if err != nil {
+		t.Fatalf("DeviceCapacity: %v", err)
+	}
+	if got != 8192 {
+		t.Fatalf("DeviceCapacity = %d, want 8192", got)
+	}
+}
+
+func TestDeviceCapacityMissing(t *testing.T) {
+	if _, err := DeviceCapacity(filepath.Join(t.TempDir(), "nope")); err == nil {
+		t.Fatal("DeviceCapacity on a missing path should error (callers fail open)")
+	}
+}
+
 func TestWriteImageZstd(t *testing.T) {
 	image := bytes.Repeat([]byte("rootfs data "), 100000) // ~1.2 MB, crosses buffer boundary
 	var comp bytes.Buffer

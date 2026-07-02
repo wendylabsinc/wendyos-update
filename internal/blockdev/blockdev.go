@@ -83,6 +83,24 @@ func WriteImage(dst string, src io.Reader, compression string, progress Progress
 	return written, hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// DeviceCapacity returns the size in bytes of the block device (or regular
+// file) at dst, by opening it read-only and seeking to the end. On Linux a
+// partition block device reports its exact size this way. Returns an error if
+// the size cannot be determined; callers treat that as "unknown" and proceed
+// (WriteImage's write past the partition boundary remains the backstop).
+func DeviceCapacity(dst string) (int64, error) {
+	f, err := os.Open(dst)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, fmt.Errorf("capacity of %s: %w", dst, err)
+	}
+	return size, nil
+}
+
 // Decompressor wraps src according to the manifest's compression field.
 func Decompressor(src io.Reader, compression string) (io.Reader, func(), error) {
 	switch compression {
