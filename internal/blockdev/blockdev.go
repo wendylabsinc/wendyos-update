@@ -83,6 +83,33 @@ func WriteImage(dst string, src io.Reader, compression string, progress Progress
 	return written, hex.EncodeToString(h.Sum(nil)), nil
 }
 
+// Capacity reports the size in bytes of the block device at path.
+// ok is false when path is not a block device (a regular file in tests,
+// a missing node) or the size cannot be determined — callers should
+// skip capacity enforcement then, not fail: a probe gap must never
+// brick updates on an otherwise healthy device.
+func Capacity(path string) (size int64, ok bool) {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return 0, false
+	}
+	mode := fi.Mode()
+	if mode&os.ModeDevice == 0 || mode&os.ModeCharDevice != 0 {
+		return 0, false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+	// Seek-end returns the device size for block devices; no ioctl needed.
+	size, err = f.Seek(0, io.SeekEnd)
+	if err != nil || size <= 0 {
+		return 0, false
+	}
+	return size, true
+}
+
 // Decompressor wraps src according to the manifest's compression field.
 func Decompressor(src io.Reader, compression string) (io.Reader, func(), error) {
 	switch compression {

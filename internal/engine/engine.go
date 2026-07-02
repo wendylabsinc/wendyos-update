@@ -45,6 +45,11 @@ type Engine struct {
 	HealthDir      string // legacy override for the health phase only (config health_dir)
 	ToolVersion    string
 	Progress       Progress // may be nil
+
+	// SlotCapacity probes the target slot's byte capacity; default
+	// blockdev.Capacity. ok=false skips the pre-flight (fail-open).
+	// A field so tests can fake block-device geometry.
+	SlotCapacity func(dev string) (size int64, ok bool)
 }
 
 func (e *Engine) progress(phase string, percent int) {
@@ -103,6 +108,30 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 	dev, err := e.Conn.PartitionFor(target)
 	if err != nil {
 		return nil, err
+	}
+
+	// Pre-flight: never start writing a payload the slot cannot hold — a
+	// mid-write failure would leave a torn slot and a confusing kernel
+	// error instead of a clear rejection. Build configs pin the image to
+	// the slot size exactly (wendyos-builder fixed-rootfs-sizes), so a
+	// smaller-than-slot payload is legal but worth a warning.
+	capacityFn := e.SlotCapacity
+	if capacityFn == nil {
+		capacityFn = blockdev.Capacity
+	}
+	if m.Payload.Size > 0 {
+		if capacity, ok := capacityFn(dev); ok {
+			if m.Payload.Size > capacity {
+				return nil, reject("payload (%d bytes) exceeds target slot %s (%d bytes)",
+					m.Payload.Size, dev, capacity)
+			}
+			if m.Payload.Size != capacity {
+				slog.Warn("install: payload smaller than target slot; fixed-size builds expect equality",
+					"payload_bytes", m.Payload.Size, "slot_bytes", capacity, "dev", dev)
+			}
+		} else {
+			slog.Warn("install: cannot determine target slot capacity; skipping size pre-flight", "dev", dev)
+		}
 	}
 
 	// pre-install gate: products may refuse the update before anything is

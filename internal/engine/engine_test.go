@@ -243,6 +243,58 @@ func TestInstallRejectsWrongDevice(t *testing.T) {
 	}
 }
 
+func TestInstallRejectsPayloadLargerThanSlot(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	art, image := buildArtifact(t, nil)
+	e.SlotCapacity = func(dev string) (int64, bool) {
+		return int64(len(image)) - 1, true
+	}
+
+	_, err := e.Install(bytes.NewReader(art))
+	var rej *RejectError
+	if !errors.As(err, &rej) {
+		t.Fatalf("want RejectError, got %v", err)
+	}
+	// rejected before anything was written or swapped
+	if got, _ := os.ReadFile(f.dev); len(got) != 0 {
+		t.Fatal("device was written despite rejection")
+	}
+	if st, _ := e.LoadState(); st != nil {
+		t.Fatal("state persisted despite rejection")
+	}
+	if len(f.swapped) != 0 {
+		t.Fatal("SwapSlot called despite rejection")
+	}
+}
+
+func TestInstallAcceptsPayloadExactlySlotSized(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	art, image := buildArtifact(t, nil)
+	e.SlotCapacity = func(dev string) (int64, bool) {
+		return int64(len(image)), true
+	}
+
+	if _, err := e.Install(bytes.NewReader(art)); err != nil {
+		t.Fatalf("exact-fit install: %v", err)
+	}
+	if got, _ := os.ReadFile(f.dev); !bytes.Equal(got, image) {
+		t.Fatal("device content differs from image")
+	}
+}
+
+func TestInstallSkipsPreflightWhenCapacityUnknown(t *testing.T) {
+	f := &fakeConn{cur: connector.SlotA}
+	e := testEngine(t, f)
+	art, _ := buildArtifact(t, nil)
+	e.SlotCapacity = func(dev string) (int64, bool) { return 0, false }
+
+	if _, err := e.Install(bytes.NewReader(art)); err != nil {
+		t.Fatalf("capacity-unknown install must fail open: %v", err)
+	}
+}
+
 func TestInstallRejectsToolVersionGate(t *testing.T) {
 	f := &fakeConn{cur: connector.SlotA}
 	e := testEngine(t, f)

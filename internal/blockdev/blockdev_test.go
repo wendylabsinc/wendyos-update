@@ -105,3 +105,16 @@ func TestWriteImageCorruptStream(t *testing.T) {
 		t.Fatal("expected decompression error")
 	}
 }
+
+func TestCapacityNotABlockDevice(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "regular-file")
+	if err := os.WriteFile(f, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := Capacity(f); ok {
+		t.Fatal("regular file must not report a capacity")
+	}
+	if _, ok := Capacity(filepath.Join(t.TempDir(), "missing")); ok {
+		t.Fatal("missing path must not report a capacity")
+	}
+}
