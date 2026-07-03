@@ -74,9 +74,21 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	_, markerErr := os.Stat(marker)
 	hasMarker := markerErr == nil
 
-	if !hasMarker {
-		// ROOTFS-ONLY: switch the chain via nvbootctrl.
-		slog.Info("swap: rootfs-only update, switching boot slot", "slot", s.String())
+	// The capsule path (below) delegates the ENTIRE slot switch to UEFI
+	// processing the capsule at reboot — no nvbootctrl call. That only works
+	// where capsule-on-disk is actually honored (Thor). On Orin and unknown
+	// SoCs the firmware silently ignores a correctly-staged capsule, so the
+	// slot never moves and the update no-ops (reboots into the same OS). Fall
+	// back to the reliable nvbootctrl slot switch there: the new rootfs boots
+	// on the existing bootloader (validated by manual set-active-boot-slot),
+	// only the bootloader is left un-updated. See capsuleUpdateEffective.
+	if !hasMarker || !c.capsuleUpdateEffective() {
+		if hasMarker {
+			slog.Warn("swap: image requests a bootloader update but UEFI capsule-on-disk is not effective on this platform; applying rootfs-only slot switch — the bootloader will NOT be updated",
+				"slot", s.String())
+		} else {
+			slog.Info("swap: rootfs-only update, switching boot slot", "slot", s.String())
+		}
 		if err := c.recordBootAttempt(s); err != nil {
 			return err
 		}
@@ -125,6 +137,39 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	// Deliberately NO nvbootctrl call: UpdateFwChain() switches the
 	// chain when the capsule is processed.
 	return nil
+}
+
+// capsuleEffectiveSoC is the device-tree compatible token for the only
+// platform where UEFI capsule-on-disk bootloader updates are validated to be
+// processed by the firmware: NVIDIA Jetson AGX Thor (t264).
+const capsuleEffectiveSoC = "tegra264"
+
+// capsuleUpdateEffective reports whether staging a UEFI capsule-on-disk update
+// (capsule on the ESP + OsIndications bit, no nvbootctrl call) will actually
+// be honored by this platform's firmware.
+//
+// This is an allowlist, not a capability probe, and deliberately so: the UEFI
+// OsIndicationsSupported variable advertises FILE_CAPSULE_DELIVERY on Orin
+// (tegra234) too, yet the firmware never processes a correctly-staged capsule
+// there — observed fleet-wide on AGX Orin and Orin Nano (r39.2): ESRT stays 0,
+// the boot chain never switches, and the whole update silently no-ops. Only
+// Thor (tegra264) is validated to process the capsule. Everything else — Orin
+// and any unknown or unreadable SoC — is treated as ineffective so SwapSlot
+// falls back to the reliable nvbootctrl slot switch, trading the bootloader
+// update for an update that actually applies.
+func (c *Controller) capsuleUpdateEffective() bool {
+	raw, err := os.ReadFile(c.RootDir + "/proc/device-tree/compatible")
+	if err != nil {
+		slog.Warn("capsule-on-disk gate: cannot read device-tree compatible; treating capsule updates as ineffective (rootfs-only slot switch)", "err", err)
+		return false
+	}
+	// compatible is a NUL-separated list of "vendor,soc" strings.
+	for _, tok := range strings.Split(string(raw), "\x00") {
+		if strings.Contains(tok, capsuleEffectiveSoC) {
+			return true
+		}
+	}
+	return false
 }
 
 // recordBootAttempt notes which slot the next boot targets — input for
