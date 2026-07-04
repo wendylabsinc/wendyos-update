@@ -60,6 +60,17 @@ func (c *Controller) Diagnostics(verbose bool) map[string]string {
 		}
 	}
 
+	// Rootfs A/B redundancy: when not armed, a slot switch is a firmware
+	// no-op and every OTA rolls back — the single most important field for
+	// diagnosing a device that installs but never commits.
+	if armed, err := c.rootfsRedundancyArmed(); err == nil {
+		if armed {
+			d["rootfs_redundancy"] = "armed"
+		} else {
+			d["rootfs_redundancy"] = "NOT ARMED (RootfsRedundancyLevel missing/zero — slot switch is a no-op)"
+		}
+	}
+
 	if verbose {
 		c.verboseDiagnostics(d, blInfo)
 	}

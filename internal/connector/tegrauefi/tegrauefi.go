@@ -22,6 +22,7 @@ package tegrauefi
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -312,6 +313,60 @@ func (c *Controller) MarkGood() error {
 func (c *Controller) ConfirmBoot() error {
 	if out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "mark-boot-successful"); err != nil {
 		return fmt.Errorf("confirm boot: nvbootctrl mark-boot-successful: %w (%s)", err, out)
+	}
+	return nil
+}
+
+// redundancyLevelVar is NVIDIA's UEFI variable that enables rootfs A/B
+// redundancy. On disk it is 4-byte attrs (0x07 = NV+BS+RT) + a UINT32 level
+// (see scripts/system-status.sh --dual, which writes 07 00 00 00 01 00 00 00).
+func (c *Controller) redundancyLevelVar() string {
+	return filepath.Join(c.EfivarsDir, "RootfsRedundancyLevel-"+VendorGUID)
+}
+
+// rootfsRedundancyArmed reports whether rootfs A/B redundancy is enabled in
+// firmware. Armed means the RootfsRedundancyLevel variable exists with a
+// non-zero level. A missing (or zero) variable means single-slot: firmware
+// ignores `nvbootctrl -t rootfs set-active-boot-slot`, so a slot switch is a
+// silent no-op. This is the state left by flashing a rootfs directly to disk
+// (e.g. straight to NVMe) instead of via tegraflash, which arms it.
+func (c *Controller) rootfsRedundancyArmed() (bool, error) {
+	raw, err := os.ReadFile(c.redundancyLevelVar())
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	// attrs(4) + UINT32 level; armed iff the level is non-zero.
+	if len(raw) < 8 {
+		return false, nil
+	}
+	return raw[4]|raw[5]|raw[6]|raw[7] != 0, nil
+}
+
+// PreflightInstall implements connector.InstallPreflighter. The tegra A/B
+// scheme depends on rootfs redundancy being armed in firmware: without it,
+// `nvbootctrl -t rootfs set-active-boot-slot` is silently ignored — the
+// bootchain flips but the running rootfs slot never moves, so every update
+// rolls back at commit (running slot != target slot). Refuse up front with an
+// actionable message instead of downloading, writing, rebooting, then rolling
+// back.
+func (c *Controller) PreflightInstall() error {
+	armed, err := c.rootfsRedundancyArmed()
+	if err != nil {
+		// Probe failed unexpectedly: don't block the update on a read error —
+		// the commit-time running-slot vs target-slot check still catches a
+		// genuine no-op fallback.
+		slog.Warn("preflight: could not read RootfsRedundancyLevel; proceeding", "err", err)
+		return nil
+	}
+	if !armed {
+		return fmt.Errorf("rootfs A/B redundancy is not armed on this device "+
+			"(UEFI variable %s missing or zero): a rootfs slot switch is ignored by "+
+			"firmware, so the update would install and then roll back. Arm redundancy "+
+			"(the wendyos-tegra-rootfs-redundancy boot service, or system-status.sh "+
+			"--dual) and reboot, then retry the update", "RootfsRedundancyLevel")
 	}
 	return nil
 }

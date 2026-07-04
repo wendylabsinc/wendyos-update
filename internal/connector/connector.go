@@ -125,6 +125,21 @@ type BootConfirmer interface {
 	ConfirmBoot() error
 }
 
+// InstallPreflighter is an optional connector extension that validates the
+// platform can actually carry out an A/B slot switch BEFORE the engine writes
+// anything. A non-nil error aborts the install with nothing changed.
+//
+// Connectors whose slot switch can silently no-op on a mis-provisioned device
+// implement this to fail loud and early instead of downloading, writing, and
+// rebooting only to roll back at commit. Tegra is the motivating case: without
+// rootfs A/B redundancy armed in firmware, `nvbootctrl -t rootfs
+// set-active-boot-slot` is ignored and every update rolls back.
+type InstallPreflighter interface {
+	// PreflightInstall returns nil when an A/B switch can take effect, or an
+	// actionable error describing what must be fixed on the device first.
+	PreflightInstall() error
+}
+
 // SlotStatus is display-only per-slot health from the connector. Empty
 // fields are omitted by the `status` formatter.
 type SlotStatus struct {
