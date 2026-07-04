@@ -105,6 +105,16 @@ func (e *Engine) Install(src io.Reader) (*InstallResult, error) {
 		return nil, err
 	}
 
+	// Connector preflight: refuse now if the platform cannot actually carry
+	// out an A/B switch (e.g. tegra rootfs redundancy not armed in firmware),
+	// so we don't download, write, and reboot only to roll back at commit
+	// when the running slot never moved off the origin.
+	if pf, ok := e.Conn.(connector.InstallPreflighter); ok {
+		if err := pf.PreflightInstall(); err != nil {
+			return nil, reject("%v", err)
+		}
+	}
+
 	// Capacity pre-flight: the on-device A/B slot is fixed at flash time and is
 	// never re-partitioned, so a payload larger than the slot cannot be
 	// installed. Reject up front (nothing written) rather than failing mid-write

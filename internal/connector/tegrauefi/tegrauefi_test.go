@@ -94,6 +94,49 @@ func writeSlotVar(t *testing.T, c *Controller, s connector.Slot, content []byte)
 	return path
 }
 
+// armed rootfs A/B redundancy is 4-byte attrs (0x07) + a non-zero UINT32
+// level, exactly as scripts/system-status.sh --dual writes it.
+var redundancyArmed = []byte{0x07, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00}
+
+func writeRedundancyVar(t *testing.T, c *Controller, content []byte) {
+	t.Helper()
+	if err := os.WriteFile(c.redundancyLevelVar(), content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// PreflightInstall must REFUSE when rootfs A/B redundancy is not armed: the
+// RootfsRedundancyLevel variable is missing (the state a raw NVMe rootfs flash
+// leaves, vs tegraflash which arms it). Otherwise the slot switch is a silent
+// firmware no-op and the update rolls back at commit.
+func TestPreflightInstallRefusesWhenRedundancyNotArmed(t *testing.T) {
+	// Missing variable entirely.
+	c := testController(t)
+	if err := c.PreflightInstall(); err == nil {
+		t.Fatal("PreflightInstall should refuse when RootfsRedundancyLevel is absent")
+	} else if !strings.Contains(err.Error(), "RootfsRedundancyLevel") {
+		t.Fatalf("error should name the missing variable; got: %v", err)
+	}
+
+	// Present but zero level (single-slot) — also not armed.
+	c = testController(t)
+	writeRedundancyVar(t, c, []byte{0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00})
+	if err := c.PreflightInstall(); err == nil {
+		t.Fatal("PreflightInstall should refuse when RootfsRedundancyLevel level is zero")
+	}
+}
+
+// PreflightInstall must PASS when redundancy is armed, so a correctly
+// provisioned device (e.g. the AGX Orin, or an Orin Nano after --dual) updates
+// normally.
+func TestPreflightInstallPassesWhenRedundancyArmed(t *testing.T) {
+	c := testController(t)
+	writeRedundancyVar(t, c, redundancyArmed)
+	if err := c.PreflightInstall(); err != nil {
+		t.Fatalf("PreflightInstall should pass when redundancy is armed; got: %v", err)
+	}
+}
+
 func TestSlotOther(t *testing.T) {
 	if connector.SlotA.Other() != connector.SlotB || connector.SlotB.Other() != connector.SlotA {
 		t.Fatal("Other() mapping wrong")
