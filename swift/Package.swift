@@ -44,5 +44,18 @@ let package = Package(
             dependencies: ["WendyUpdate"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .systemLibrary(
+            name: "CLinuxSys"
+        ),
+        .target(
+            name: "LinuxSys",
+            dependencies: ["CLinuxSys"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "LinuxSysTests",
+            dependencies: ["LinuxSys"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
