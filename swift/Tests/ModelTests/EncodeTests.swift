@@ -95,6 +95,42 @@ private let expectedPrettyManifest = """
     #expect(String(decoding: bytes, as: UTF8.self) == expected)
 }
 
+/// `docs/state-schema.md` freezes `state.json`'s v1 shape byte-for-byte —
+/// it's read back by the Go binary (and, once ported, by itself) across
+/// power cuts, so the pretty-printed form must match
+/// `json.MarshalIndent(_, "", "  ")` exactly: 2-space indent, this exact
+/// key order (schema, phase, target_slot, artifact_name,
+/// artifact_version, payload_sha256, bootloader_update, created), and a
+/// single trailing newline. `expectedStatePretty` is hand-typed from the
+/// doc's example, not derived from `encodePretty`.
+@Test func encodeStatePrettyMatchesStateSchemaDocExactly() {
+    let state = State(
+        schema: 1,
+        phase: "swapped",
+        targetSlot: 1,
+        artifactName: "wendyos-image-...-0.16.0",
+        artifactVersion: "0.16.0",
+        payloadSHA256: "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
+        bootloaderUpdate: false,
+        created: "2026-06-07T12:00:00Z"
+    )
+    let expected = """
+        {
+          "schema": 1,
+          "phase": "swapped",
+          "target_slot": 1,
+          "artifact_name": "wendyos-image-...-0.16.0",
+          "artifact_version": "0.16.0",
+          "payload_sha256": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcd",
+          "bootloader_update": false,
+          "created": "2026-06-07T12:00:00Z"
+        }
+
+        """
+    let bytes = JSONCodec.encodePretty(state.makeJSONObject())
+    #expect(String(decoding: bytes, as: UTF8.self) == expected)
+}
+
 @Test func encodeInstalledHistoryPreservesEntryOrderAndFieldOrder() {
     let history = InstalledHistory(history: [
         InstalledEntry(artifactName: "a", artifactVersion: "1.0.0", committed: "t1", slot: 0),

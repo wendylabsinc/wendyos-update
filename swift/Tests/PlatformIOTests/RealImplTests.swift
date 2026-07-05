@@ -62,3 +62,30 @@ private func tempDir(_ tag: String) -> String {
     #expect(result.exitCode == 0)
     #expect(String(decoding: result.stdout, as: UTF8.self) == "hi\n")
 }
+
+/// `state.json`'s `created` field is stamped with this string verbatim
+/// and re-parsed by the Go binary as `time.RFC3339`
+/// (`"2006-01-02T15:04:05Z"`). Pins the exact shape — no fractional
+/// seconds, always a literal `Z` (never a `+00:00`/numeric offset) — so a
+/// future switch to `ISO8601DateFormatter`/`Date.formatted` can't
+/// silently drift the on-disk format.
+@Test func realClockFormatsAsBareRFC3339UTCWithNoFractionalSeconds() {
+    let timestamp = RealClock().nowUTCISO8601()
+
+    #expect(timestamp.count == 20)
+    #expect(timestamp.hasSuffix("Z"))
+
+    let digitPositions = [0, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18]
+    let dashPositions = [4, 7]
+    let chars = Array(timestamp)
+    for i in digitPositions {
+        #expect(chars[i].isASCII && chars[i].isNumber, "expected digit at index \(i), got \(chars[i]) in \(timestamp)")
+    }
+    for i in dashPositions {
+        #expect(chars[i] == "-", "expected '-' at index \(i), got \(chars[i]) in \(timestamp)")
+    }
+    #expect(chars[10] == "T", "expected 'T' at index 10, got \(chars[10]) in \(timestamp)")
+    #expect(chars[13] == ":", "expected ':' at index 13, got \(chars[13]) in \(timestamp)")
+    #expect(chars[16] == ":", "expected ':' at index 16, got \(chars[16]) in \(timestamp)")
+    #expect(chars[19] == "Z", "expected 'Z' at index 19, got \(chars[19]) in \(timestamp)")
+}
