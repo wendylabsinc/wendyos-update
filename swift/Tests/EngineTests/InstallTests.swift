@@ -468,6 +468,57 @@ struct InstallTests {
         #expect(!conn.callLog.contains(where: { $0.hasPrefix("swapSlot") }))
     }
 
+    @Test func prepareTargetFailureLeavesStateWrittenAndNeverSwaps() async throws {
+        // engine.go: PrepareTarget error returns immediately with "state
+        // stays phase=written; rollback/mark-good recovers" — the swap must
+        // NOT have happened, and the persisted state must read `written`
+        // (never `swapped`) so recovery has an accurate record.
+        let fs = FakeFileStore()
+        writeDeviceType(fs)
+        let recording = RecordingFileStore(fs)
+        let conn = FakeConnector()
+        conn.prepareTargetError = FakeConnectorError(message: "prepare failed")
+        let engine = makeEngine(conn: conn, fs: recording)
+        let reader = try makeReader()
+        let blockTarget = makeBlockTarget()
+
+        await #expect(throws: FakeConnectorError.self) {
+            _ = try await engine.install(reader, blockTarget: blockTarget)
+        }
+
+        // Only the written state was ever persisted (saveState(swapped)
+        // was never reached), and it survives on disk for recovery.
+        #expect(recording.savedStates.map(\.phase) == [PhaseWritten])
+        #expect(try engine.loadState()?.phase == PhaseWritten)
+        // The install swap never happened.
+        #expect(!conn.callLog.contains("swapSlot(B, stage:true)"))
+    }
+
+    @Test func installSwapFailureLeavesStateWrittenNotSwapped() async throws {
+        // engine.go: SwapSlot(target, true) error returns immediately,
+        // before saveState(swapped) — so the persisted phase must stay
+        // `written` for rollback/mark-good recovery.
+        let fs = FakeFileStore()
+        writeDeviceType(fs)
+        let recording = RecordingFileStore(fs)
+        let conn = FakeConnector()
+        conn.swapSlotInstallError = FakeConnectorError(message: "install swap failed")
+        let engine = makeEngine(conn: conn, fs: recording)
+        let reader = try makeReader()
+        let blockTarget = makeBlockTarget()
+
+        await #expect(throws: FakeConnectorError.self) {
+            _ = try await engine.install(reader, blockTarget: blockTarget)
+        }
+
+        // prepareTarget ran and the install swap was attempted (and threw)...
+        #expect(conn.callLog.contains("prepareTarget(B)"))
+        #expect(conn.callLog.contains("swapSlot(B, stage:true)"))
+        // ...but saveState(swapped) was never reached: phase stays written.
+        #expect(recording.savedStates.map(\.phase) == [PhaseWritten])
+        #expect(try engine.loadState()?.phase == PhaseWritten)
+    }
+
     @Test func digestMismatchRejectsAfterWriteButBeforeAnyStateIsSaved() async throws {
         let fs = FakeFileStore()
         writeDeviceType(fs)
