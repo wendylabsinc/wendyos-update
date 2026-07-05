@@ -374,6 +374,46 @@ private let redundancyZeroLevel: [UInt8] = [0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 
     #expect(throws: TegraUEFIError.self) { try conn.confirmBoot() }
 }
 
+// MARK: - MarkGood (ports TestMarkGood*)
+
+/// `MarkGood` must confirm the running slot to the bootloader
+/// (`nvbootctrl mark-boot-successful`) — the trial-boot confirm that stops
+/// the firmware retry countdown. Ports `TestMarkGoodConfirmsBootToFirmware`.
+@Test func markGoodConfirmsBootToFirmware() throws {
+    let (conn, cmd, _, _) = makeConnector()
+    cmd.script(containing: "get-current-slot", stdout: "0\n")  // running slot A
+
+    try conn.markGood()
+
+    #expect(cmd.ranCommand(containing: "-t rootfs mark-boot-successful"))
+}
+
+/// Ports `TestMarkGood`: resets the (inactive) slot B status var left
+/// unbootable by a past rollback, and clears stale double-boot bookkeeping.
+@Test func markGoodResetsInactiveSlotAndClearsBookkeeping() throws {
+    let (conn, cmd, files, efivarsDir) = makeConnector()
+    cmd.script(containing: "get-current-slot", stdout: "0\n")  // running slot A
+
+    let pathB = "\(efivarsDir)/RootfsStatusSlotB-781e084c-a330-417c-b678-38e696380cb9"
+    writeFile(pathB, [0x07, 0, 0, 0, 0xFF, 0, 0, 0])
+
+    try files.writeAtomic("/rootdir/data/wendyos-update/connector/tegrauefi/boot_attempted", Array("1".utf8), mode: 0o644)
+
+    try conn.markGood()
+
+    #expect(EfiVar.statusIsNormal(readEfivarBytes(pathB)))
+    #expect(!files.exists("/rootdir/data/wendyos-update/connector/tegrauefi/boot_attempted"))
+}
+
+/// Ports `TestMarkGoodNoBookkeeping`: no vars, no boot_attempted file —
+/// must succeed as a no-op beyond the boot confirm.
+@Test func markGoodSucceedsWithNoBookkeeping() throws {
+    let (conn, cmd, _, _) = makeConnector()
+    cmd.script(containing: "get-current-slot", stdout: "1\n")  // running slot B
+
+    try conn.markGood()  // must not throw
+}
+
 // MARK: - detect (factory)
 
 @Test func factoryNameIsTegrauefi() {

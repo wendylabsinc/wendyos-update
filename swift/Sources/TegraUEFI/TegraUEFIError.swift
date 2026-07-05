@@ -65,6 +65,32 @@ public enum TegraUEFIError: Error, Equatable, ExitCoded {
     case osIndicationsFailed(String)
     /// `nvbootctrl -t rootfs mark-boot-successful` exited non-zero.
     case confirmBootFailed(String)
+    /// The ESRT `last_attempt_status` file's contents did not parse as an
+    /// integer.
+    case platformVerifyESRTUnparseable(String)
+    /// ESRT reported one of the standard UEFI capsule error codes (1-6).
+    case platformVerifyESRTStandardError(Int)
+    /// ESRT reported 6163: NVIDIA "CheckTheImage failed" / capsule
+    /// rejected.
+    case platformVerifyESRTCapsuleRejected
+    /// ESRT reported 6164: NVIDIA SKU not included in the capsule's BUP.
+    case platformVerifyESRTSKUMismatch
+    /// ESRT reported a code in NVIDIA's vendor error range
+    /// (0x1000-0x4000), other than the two named codes above.
+    case platformVerifyESRTVendorError(Int)
+    /// Removing the staged capsule from the ESP, or clearing the
+    /// `OsIndications` capsule bit, failed while aborting a platform
+    /// update.
+    case abortPlatformUpdateFailed(String)
+    /// `mark-good`: determining the current slot, or confirming the boot
+    /// to firmware, failed.
+    case markGoodFailed(String)
+    /// `mark-good`: resetting the now-inactive slot's `RootfsStatusSlot*`
+    /// var failed.
+    case markGoodResetInactiveFailed(String)
+    /// `mark-good`: clearing the `boot_attempted` bookkeeping file failed
+    /// (for a reason other than it already being absent).
+    case markGoodClearBootAttemptedFailed(String)
 
     /// All `TegraUEFI` failures are fatal to the in-progress connector
     /// operation.
@@ -116,6 +142,25 @@ extension TegraUEFIError: CustomStringConvertible {
             return "OsIndications: \(detail)"
         case .confirmBootFailed(let detail):
             return "confirm boot: nvbootctrl mark-boot-successful: \(detail)"
+        case .platformVerifyESRTUnparseable(let text):
+            return "platform verify: unparseable ESRT status \"\(text)\""
+        case .platformVerifyESRTStandardError(let status):
+            return "platform verify: ESRT status \(status) (standard UEFI capsule error)"
+        case .platformVerifyESRTCapsuleRejected:
+            return "platform verify: ESRT status 6163 (NVIDIA: capsule rejected / CheckTheImage failed "
+                + "— typically a pending/un-settled boot-chain state, not a signature problem)"
+        case .platformVerifyESRTSKUMismatch:
+            return "platform verify: ESRT status 6164 (NVIDIA: device SKU not included in the capsule's BUP)"
+        case .platformVerifyESRTVendorError(let status):
+            return "platform verify: ESRT status \(status) (NVIDIA vendor error)"
+        case .abortPlatformUpdateFailed(let detail):
+            return "abort platform update: \(detail)"
+        case .markGoodFailed(let detail):
+            return "mark-good: \(detail)"
+        case .markGoodResetInactiveFailed(let detail):
+            return "mark-good: reset inactive slot: \(detail)"
+        case .markGoodClearBootAttemptedFailed(let detail):
+            return "mark-good: clear boot_attempted: \(detail)"
         }
     }
 }

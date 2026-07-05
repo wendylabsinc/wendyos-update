@@ -5,10 +5,11 @@ import PlatformIO
 // Direct port of `internal/connector/tegrauefi/tegrauefi.go`'s
 // `Controller` (Task 8.2 slice: `Name`, `CurrentSlot`, `PartitionFor`,
 // `PrepareTarget`, `BootIsCompromised`, `PreflightInstall`, `ConfirmBoot`,
-// plus `detect`). `SwapSlot` lives in `SwapSlot.swift` (ports
-// `swap-slot.go`). `MarkGood`/`VerifyPlatformUpdate`/`AbortPlatformUpdate`/
-// `Diagnostics`/`slotStatus`/`systemStatus` are stubbed below — Tasks
-// 8.3/8.4 replace the stubs; they exist here only so `TegraUEFI` satisfies
+// plus `detect`; Task 8.3 adds `MarkGood`, below). `SwapSlot` lives in
+// `SwapSlot.swift` (ports `swap-slot.go`); `VerifyPlatformUpdate`/
+// `AbortPlatformUpdate` live in `Verify.swift` (ports `verify.go`, Task
+// 8.3). `Diagnostics`/`slotStatus`/`systemStatus` are stubbed below — Task
+// 8.4 replaces the stubs; they exist here only so `TegraUEFI` satisfies
 // `Connector`.
 //
 // Platform facts (see `tegrauefi.go`'s package doc, validated on t234/r36
@@ -299,19 +300,43 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
         }
     }
 
-    // MARK: - Stubs (Tasks 8.3/8.4)
+    // MARK: - MarkGood
 
-    // TODO(8.3): port `MarkGood` (reset-inactive-slot-status + clear
-    // double-boot bookkeeping + ConfirmBoot).
-    public func markGood() throws {}
+    /// Finalizes a healthy, committed boot:
+    ///   - confirms the running slot to the bootloader (stops the
+    ///     trial-boot retry countdown; WendyOS does not ship NVIDIA's
+    ///     `nv_update_verifier.service`, so this connector's `confirmBoot`
+    ///     is the only thing that does it),
+    ///   - resets the now-INACTIVE slot's status var so it is a valid
+    ///     rollback target for the next cycle,
+    ///   - clears this connector's double-boot bookkeeping.
+    ///
+    /// Ports `tegrauefi.go`'s `MarkGood`.
+    public func markGood() throws {
+        let cur: Slot
+        do {
+            cur = try currentSlot()
+        } catch {
+            throw TegraUEFIError.markGoodFailed("\(error)")
+        }
+        do {
+            try confirmBoot()
+        } catch {
+            throw TegraUEFIError.markGoodFailed("\(error)")
+        }
+        do {
+            try prepareTarget(cur.other)
+        } catch {
+            throw TegraUEFIError.markGoodResetInactiveFailed("\(error)")
+        }
+        do {
+            try fileStore.remove(bootAttemptedPath())
+        } catch {
+            throw TegraUEFIError.markGoodClearBootAttemptedFailed("\(error)")
+        }
+    }
 
-    // TODO(8.4): port `VerifyPlatformUpdate` (bootloader version + ESRT
-    // cascade).
-    public func verifyPlatformUpdate(bootloaderUpdate: Bool) throws {}
-
-    // TODO(8.4): port `AbortPlatformUpdate` (unstage capsule + disarm
-    // OsIndications).
-    public func abortPlatformUpdate() throws {}
+    // MARK: - Stubs (Task 8.4)
 
     // TODO(8.4): port board-specific diagnostics/status detail.
     public func diagnostics(verbose: Bool) -> [String: String] { [:] }
