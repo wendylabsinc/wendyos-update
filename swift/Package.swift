@@ -173,7 +173,7 @@ let package = Package(
         ),
         .testTarget(
             name: "EngineTests",
-            dependencies: ["Engine", "PlatformIO", "PlatformIOTesting", "Connector"],
+            dependencies: ["Engine", "Model", "PlatformIO", "PlatformIOTesting", "Connector"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

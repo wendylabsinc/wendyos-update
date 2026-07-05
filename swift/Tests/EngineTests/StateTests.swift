@@ -46,7 +46,7 @@ private func makeEngine(
 private func sampleState() -> State {
     State(
         schema: 1,
-        phase: "written",
+        phase: PhaseWritten,
         targetSlot: 1,
         artifactName: "wendyos-image-jetson-agx-thor",
         artifactVersion: "0.2.0",
@@ -100,6 +100,15 @@ struct StatePersistenceTests {
         let text = String(decoding: bytes, as: UTF8.self)
         #expect(text.hasPrefix("{\n  \"schema\": 1,\n"))
         #expect(text.hasSuffix("}\n"))
+    }
+}
+
+@Suite("Phase constants")
+struct PhaseConstantTests {
+    @Test func phaseStringValuesMatchGo() {
+        #expect(PhaseWritten == "written")
+        #expect(PhaseSwapped == "swapped")
+        #expect(PhaseFailed == "failed")
     }
 }
 
