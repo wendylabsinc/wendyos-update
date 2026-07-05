@@ -23,6 +23,16 @@
 #     swift build --swift-sdk aarch64-swift-linux-musl -c release
 FROM swiftlang/swift:nightly-6.3-jammy
 
+# libzstd-dev provides zstd.h for the Zstd package's CZstd system-library
+# target (the base image already ships the libzstd1 runtime, but not the
+# header); zlib1g-dev is already present in the base image (needed to
+# build Swift itself) but is listed explicitly here too since the Zstd
+# package links against it directly via CZstd's module map.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends \
+    libzstd-dev \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Static Linux SDK (Musl), used for `swift build --swift-sdk
 # aarch64-swift-linux-musl -c release`. The SDK version must match (or be
 # compatible with) the toolchain above; see docs/swift-build.md for how
