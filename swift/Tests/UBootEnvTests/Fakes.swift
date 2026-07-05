@@ -41,6 +41,23 @@ final class FakeUBootEnvStore: UBootEnvStore, @unchecked Sendable {
     }
 }
 
+/// A `UBootCommandRunner` that records every `argv` it's asked to run and
+/// answers with a fixed, scriptable result. `onRun` fires synchronously
+/// inside `run`, before the caller's `defer`-cleanup of any script file
+/// named in `argv` — letting a test inspect a scratch file's contents at
+/// the moment `fw_setenv` would have read it.
+final class FakeUBootCommandRunner: UBootCommandRunner, @unchecked Sendable {
+    private(set) var invocations: [[String]] = []
+    var result = CommandResult(exitCode: 0, stdout: [], stderr: [])
+    var onRun: (([String]) -> Void)?
+
+    func run(_ argv: [String]) -> CommandResult {
+        invocations.append(argv)
+        onRun?(argv)
+        return result
+    }
+}
+
 func makeTempDir(_ tag: String) -> String {
     let path = "/tmp/ubootenv-test-\(getpid())-\(tag)-\(Int.random(in: 0..<1_000_000))"
     let rc = path.withCString { Glibc.mkdir($0, 0o755) }

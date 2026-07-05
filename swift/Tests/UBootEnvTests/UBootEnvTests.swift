@@ -123,9 +123,35 @@ func bootIsCompromisedMatchesTrialVsRunningSlot(_ tc: BootCompromisedCase) throw
 // MARK: - Platform-update no-ops (ports TestPlatformUpdateNoOps)
 
 @Test func platformUpdateMethodsAreNoOps() throws {
-    let (conn, _, _, _) = testController(env: FakeUBootEnvStore(), running: .a, makeSlots: true)
+    let env = FakeUBootEnvStore()
+    let (conn, _, _, _) = testController(env: env, running: .a, makeSlots: true)
     try conn.verifyPlatformUpdate(bootloaderUpdate: true)
     try conn.abortPlatformUpdate()
+    #expect(env.setCalls == 0, "verify/abort must be clean no-ops: no env write")
+}
+
+// MARK: - MarkGood (ports TestMarkGood)
+
+@Test func markGoodPinsSlotDisarmsTrialAndZeroesBootcount() throws {
+    let env = FakeUBootEnvStore([
+        UBootEnv.envBootSlot: "0", UBootEnv.envUpgradeAvailable: "1", UBootEnv.envBootCount: "1",
+    ])
+    let (conn, _, _, _) = testController(env: env, running: .b, makeSlots: true)  // committed onto slot B
+
+    try conn.markGood()
+
+    #expect(env.vars[UBootEnv.envBootSlot] == "1", "boot_slot must be pinned to the running slot")
+    #expect(env.vars[UBootEnv.envUpgradeAvailable] == "0", "trial must be disarmed once committed")
+    #expect(env.vars[UBootEnv.envBootCount] == "0")
+    #expect(env.setCalls == 1, "must be a single atomic write")
+}
+
+@Test func markGoodFailsWhenCurrentSlotCannotBeResolved() {
+    let env = FakeUBootEnvStore()
+    let (conn, _, _, _) = testController(env: env, running: nil, makeSlots: true)
+
+    #expect(throws: UBootEnvError.self) { try conn.markGood() }
+    #expect(env.setCalls == 0, "must not write a partial env when the running slot is unknown")
 }
 
 extension String {

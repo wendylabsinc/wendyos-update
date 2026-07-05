@@ -53,6 +53,31 @@ extension UBootEnv {
         }
     }
 
+    /// Finalizes a healthy, committed boot: clears the trial flag so the
+    /// current slot becomes the permanent default, pins
+    /// `wendyos_boot_slot` to the running slot, and zeros the counter for
+    /// the next cycle — one atomic write. The engine's `commit()` calls
+    /// this; leaving it a no-op would mean a committed update never
+    /// clears its U-Boot trial and could roll back on the next reboot.
+    /// Ports `swap-slot.go`'s `MarkGood`.
+    public func markGood() throws {
+        let cur: Slot
+        do {
+            cur = try currentSlot()
+        } catch {
+            throw UBootEnvError.markGoodFailed("\(error)")
+        }
+        do {
+            try env.set([
+                Self.envBootSlot: Self.slotEnvValue(cur),
+                Self.envUpgradeAvailable: "0",
+                Self.envBootCount: "0",
+            ])
+        } catch {
+            throw UBootEnvError.markGoodFailed("\(error)")
+        }
+    }
+
     /// Guards against a silently-ineffective env write. On RPi the
     /// U-Boot env is a file on the FAT boot partition
     /// (`fw_env.config` -> `/boot/uboot.env`), and the GPT fstab mounts

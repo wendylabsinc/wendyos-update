@@ -31,6 +31,9 @@ public enum UBootEnvError: Error, Equatable, ExitCoded {
     case swapArmTrialFailed(Slot, String)
     /// `swapSlot` (rollback): writing the re-point env vars failed.
     case swapRepointFailed(Slot, String)
+    /// `markGood`: resolving the running slot, or writing the
+    /// finalize-commit env vars, failed.
+    case markGoodFailed(String)
 
     /// All `UBootEnv` failures are fatal to the in-progress connector
     /// operation.
@@ -60,6 +63,8 @@ extension UBootEnvError: CustomStringConvertible {
             return "swap to slot \(slot): arm trial: \(detail)"
         case .swapRepointFailed(let slot, let detail):
             return "swap to slot \(slot): re-point: \(detail)"
+        case .markGoodFailed(let detail):
+            return "mark-good: \(detail)"
         }
     }
 }

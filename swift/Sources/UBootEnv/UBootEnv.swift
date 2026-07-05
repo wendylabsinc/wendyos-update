@@ -21,12 +21,9 @@ import PlatformIO
 // U-Boot's bootcount stays armed until an explicit commit (`markGood`)
 // clears it — there is no per-boot watchdog to satisfy.
 //
-// `markGood` (swap-slot.go) and `diagnostics`/`slotStatus`/`systemStatus`
-// (diagnostics.go) are left as TODO-tagged stubs here, matching the same
-// incremental-slice pattern TegraUEFI's Task 8.2 used (its own
-// `markGood`/`diagnostics`/`slotStatus`/`systemStatus` were stubbed in
-// the slot/partition/swap task and completed in later tasks) — they
-// exist only so `UBootEnv` satisfies `Connector`.
+// `markGood` (swap-slot.go) lives alongside `swapSlot` in `SwapSlot.swift`;
+// `diagnostics`/`slotStatus`/`systemStatus` (diagnostics.go) live in
+// `Diagnostics.swift`.
 public final class UBootEnv: Connector, @unchecked Sendable {
     public let name = "ubootenv"
 
@@ -216,19 +213,6 @@ public final class UBootEnv: Connector, @unchecked Sendable {
             throw UBootEnvError.prepareTargetFailed(s, "\(error)")
         }
     }
-
-    // MARK: - Deferred to a later task (protocol-conformance stubs only)
-
-    // TODO(future task): port `MarkGood` (swap-slot.go): clears the
-    // trial flag, pins `wendyos_boot_slot` to the running slot, and
-    // zeros `bootcount` — one atomic env write.
-    public func markGood() throws {}
-
-    // TODO(future task): port board-specific diagnostics/status detail
-    // (diagnostics.go).
-    public func diagnostics(verbose: Bool) -> [String: String] { [:] }
-    public func slotStatus(_ s: Slot) -> SlotStatus { SlotStatus() }
-    public func systemStatus() -> [KV] { [] }
 
     // MARK: - Slot ↔ partition resolution helpers
 
@@ -451,17 +435,27 @@ struct FwEnv: UBootEnvStore {
         return UBootEnv.trimmed(String(decoding: result.stdout, as: UTF8.self))
     }
 
-    /// Writes `vars` as a libubootenv `-s` script to a scratch file, runs
-    /// `fw_setenv -s <file>`, then syncs. Two libubootenv specifics
-    /// learned bringing up RPi OTA (see `envScript`): the script MUST use
-    /// `"key=value"` (a bare space is silently ignored), and `-s` opens a
-    /// real file (it does NOT treat `"-"` as stdin). Ports `fwEnv.set`.
+    /// Writes `vars` as a libubootenv `-s` script to a freshly created,
+    /// uniquely-named scratch file, runs `fw_setenv -s <file>`, then
+    /// syncs. Two libubootenv specifics learned bringing up RPi OTA (see
+    /// `envScript`): the script MUST use `"key=value"` (a bare space is
+    /// silently ignored), and `-s` opens a real file (it does NOT treat
+    /// `"-"` as stdin). Ports `fwEnv.set`, including its use of a unique
+    /// per-call temp file (`os.CreateTemp("", "wendyos-fwenv-*.txt")`)
+    /// rather than a fixed path: a fixed path lets two overlapping
+    /// invocations (e.g. a retry racing a fresh call) clobber each
+    /// other's script mid-write, corrupting whichever `fw_setenv` reads
+    /// it second.
     func set(_ vars: [String: String]) throws {
-        let scriptPath = rootDir + "/run/wendyos-update/.fwenv-script"
+        let scriptPath: String
         do {
-            try fileStore.writeAtomic(scriptPath, Array(Self.envScript(vars).utf8), mode: 0o600)
+            scriptPath = try Self.createScriptFile(
+                rootDir: rootDir,
+                fileStore: fileStore,
+                contents: Array(Self.envScript(vars).utf8)
+            )
         } catch {
-            throw UBootEnvInternalError(detail: "fw_setenv: write script: \(error)")
+            throw UBootEnvInternalError(detail: "fw_setenv: create script: \(error)")
         }
         defer { try? fileStore.remove(scriptPath) }
 
@@ -475,6 +469,49 @@ struct FwEnv: UBootEnvStore {
         // (CONFIG_ENV_IS_IN_FAT). A global sync gets the env write onto
         // disk before the reboot.
         Glibc.sync()
+    }
+
+    /// Creates a scratch file with a guaranteed-unique name under
+    /// `rootDir`/run/wendyos-update via `mkstemp(3)` (atomic
+    /// create-or-retry — the same uniqueness guarantee Go's
+    /// `os.CreateTemp` provides) and writes `contents` to it. The
+    /// directory is created first (`mkstemp` itself does not create
+    /// missing parents).
+    private static func createScriptFile(
+        rootDir: String,
+        fileStore: any FileStore,
+        contents: [UInt8]
+    ) throws -> String {
+        let dir = rootDir + "/run/wendyos-update"
+        try fileStore.mkdirp(dir, mode: 0o755)
+
+        var template = Array("\(dir)/.fwenv-XXXXXX".utf8CString)
+        let fd = template.withUnsafeMutableBufferPointer { buf in
+            Glibc.mkstemp(buf.baseAddress!)
+        }
+        guard fd >= 0 else {
+            throw UBootEnvInternalError(detail: "mkstemp: errno \(errno)")
+        }
+        let path = template.withUnsafeBufferPointer { buf in String(cString: buf.baseAddress!) }
+
+        var offset = 0
+        var writeErrno: Int32 = 0
+        contents.withUnsafeBytes { raw in
+            while offset < raw.count {
+                let n = Glibc.write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
+                if n <= 0 {
+                    writeErrno = errno
+                    break
+                }
+                offset += n
+            }
+        }
+        Glibc.close(fd)
+        guard offset == contents.count else {
+            _ = path.withCString { Glibc.unlink($0) }
+            throw UBootEnvInternalError(detail: "write script: errno \(writeErrno)")
+        }
+        return path
     }
 
     /// Renders `vars` as a libubootenv `-s` script — one `key=value` per
