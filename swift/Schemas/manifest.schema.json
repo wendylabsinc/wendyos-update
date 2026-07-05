@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Manifest",
+  "description": "manifest.json (format v1) — first member of a .wendy artifact tar. See docs/manifest-schema.md and internal/artifact/manifest.go (Go source of truth for field order and JSON tags).",
+  "type": "object",
+  "properties": {
+    "format_version": { "type": "integer" },
+    "artifact_name": { "type": "string" },
+    "artifact_version": { "type": "string" },
+    "compatible_devices": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "payload": { "$ref": "#/$defs/Payload" },
+    "bootloader_update": { "type": "boolean" },
+    "min_tool_version": { "type": "string" }
+  },
+  "required": [
+    "format_version",
+    "artifact_name",
+    "artifact_version",
+    "compatible_devices",
+    "payload",
+    "bootloader_update",
+    "min_tool_version"
+  ],
+  "$defs": {
+    "Payload": {
+      "title": "Payload",
+      "description": "Describes the rootfs image member of a .wendy artifact.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "size": {
+          "type": "integer",
+          "description": "Bytes. Modeled as Int64 in Swift/Go, not a 32-bit int."
+        },
+        "sha256": {
+          "type": "string",
+          "description": "SHA-256 of the uncompressed image."
+        },
+        "compressed_sha256": {
+          "type": "string",
+          "description": "SHA-256 of the tar member as stored (the compressed bytes)."
+        },
+        "compression": {
+          "type": "string",
+          "enum": ["zstd", "gzip", "none"]
+        }
+      },
+      "required": ["name", "size", "sha256", "compressed_sha256", "compression"]
+    }
+  }
+}

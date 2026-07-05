@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Config",
+  "description": "/etc/wendyos-update/config.json — everything optional (a missing file, or missing keys, mean \"use the built-in default\"). See cmd/wendyos-update/main.go's Config struct (Go source of truth for field order and JSON tags).",
+  "type": "object",
+  "properties": {
+    "connector": {
+      "type": "string",
+      "description": "Override auto-detect."
+    },
+    "device_type_path": {
+      "type": "string",
+      "description": "Override /etc/wendyos/device-type."
+    },
+    "state_dir": {
+      "type": "string",
+      "description": "Override /data/wendyos-update."
+    },
+    "hooks_dir": {
+      "type": "string",
+      "description": "Override /etc/wendyos-update (root of <phase>.d dirs)."
+    },
+    "health_dir": {
+      "type": "string",
+      "description": "Legacy: override the health phase dir only."
+    }
+  },
+  "required": []
+}

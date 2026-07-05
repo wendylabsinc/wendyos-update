@@ -1,4 +1,4 @@
-// swift-tools-version:6.0
+// swift-tools-version:6.1
 import PackageDescription
 import Foundation
 
@@ -40,6 +40,11 @@ let package = Package(
         // depended on directly here so PlatformIO can construct `FilePath`
         // values without guessing which module the toolchain provides.
         .package(url: "https://github.com/apple/swift-system.git", from: "1.5.0"),
+        // JSON decode/encode for the Model target. IkigaJSON's `JSONObject`
+        // is used directly (order-preserving parse + ordered-insertion
+        // encode) instead of Foundation's Codable/JSONDecoder/JSONEncoder —
+        // see swift/Sources/Model/Model.swift for why.
+        .package(url: "https://github.com/orlandos-nl/swift-json.git", from: "2.5.0"),
     ],
     targets: [
         .executableTarget(
@@ -89,6 +94,19 @@ let package = Package(
         .testTarget(
             name: "PlatformIOTests",
             dependencies: ["PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "Model",
+            dependencies: [
+                .product(name: "IkigaJSON", package: "swift-json")
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "ModelTests",
+            dependencies: ["Model"],
+            resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]

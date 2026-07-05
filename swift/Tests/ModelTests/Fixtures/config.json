@@ -1,0 +1,7 @@
+{
+  "connector": "manual",
+  "device_type_path": "/etc/wendyos/device-type",
+  "state_dir": "/data/wendyos-update",
+  "hooks_dir": "/etc/wendyos-update",
+  "health_dir": "/etc/wendyos-update/health.d"
+}
