@@ -59,6 +59,11 @@ let package = Package(
         // payload member. The wos-swift test image already has
         // libzstd-dev/zlib1g-dev installed (see CZstd's `providers`).
         .package(path: "Packages/Zstd"),
+        // Structured logging for the Engine target's lifecycle-hooks runner
+        // (Task 6.2) — mirrors hooks.go's slog usage. The log handler is
+        // bootstrapped later, by the executable (Task 7.1); this package
+        // only supplies the `Logger` API used to emit through it.
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
     ],
     targets: [
         .executableTarget(
@@ -168,7 +173,10 @@ let package = Package(
         ),
         .target(
             name: "Engine",
-            dependencies: ["Connector", "Model", "PlatformIO", "CLIError"],
+            dependencies: [
+                "Connector", "Model", "PlatformIO", "CLIError",
+                .product(name: "Logging", package: "swift-log"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
