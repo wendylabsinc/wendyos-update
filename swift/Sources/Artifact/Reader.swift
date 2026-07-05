@@ -30,7 +30,16 @@ public final class ArtifactReader {
 
     /// Reads and validates the manifest (the first tar member).
     public static func open(_ tar: TarReader) throws -> ArtifactReader {
-        guard let header = try tar.next() else {
+        // reader.go wraps ANY `tr.Next()` failure (garbage first block, not
+        // just a clean EOF) as "not a tar stream or empty" — so a thrown
+        // `TarError` must become `.notTar`, never escape as a raw `TarError`.
+        let header: TarEntry?
+        do {
+            header = try tar.next()
+        } catch {
+            throw ArtifactError.notTar("not a tar stream or empty: \(error)")
+        }
+        guard let header else {
             throw ArtifactError.notTar("not a tar stream or empty")
         }
         guard header.name == "manifest.json" else {
@@ -42,19 +51,23 @@ public final class ArtifactReader {
             throw ArtifactError.invalidManifest("manifest.json too large (\(header.size) bytes)")
         }
 
-        var bytes = [UInt8]()
-        bytes.reserveCapacity(Int(header.size))
-        var remaining = Int(header.size)
-        while remaining > 0 {
-            var chunk = [UInt8](repeating: 0, count: remaining)
-            let n = try tar.read(into: &chunk)
-            if n == 0 { break }
-            bytes.append(contentsOf: chunk[0..<n])
-            remaining -= n
-        }
-
+        // reader.go decodes the manifest through an `io.LimitReader`, so a
+        // truncated manifest body surfaces as a decode failure wrapped in
+        // "parse manifest.json: %w". Keep the body read inside the same
+        // do/catch so a mid-manifest `TarError.truncated` maps to
+        // `.invalidManifest`, not a raw `TarError`.
         let manifest: Manifest
         do {
+            var bytes = [UInt8]()
+            bytes.reserveCapacity(Int(header.size))
+            var remaining = Int(header.size)
+            while remaining > 0 {
+                var chunk = [UInt8](repeating: 0, count: remaining)
+                let n = try tar.read(into: &chunk)
+                if n == 0 { break }
+                bytes.append(contentsOf: chunk[0..<n])
+                remaining -= n
+            }
             manifest = try JSONCodec.decodeManifest(bytes)
         } catch {
             throw ArtifactError.invalidManifest("parse manifest.json: \(error)")
@@ -74,7 +87,18 @@ public final class ArtifactReader {
         }
 
         while true {
-            guard let header = try tar.next() else {
+            // reader.go distinguishes a clean EOF (payload member missing)
+            // from any other `tr.Next()` failure, which it wraps as
+            // "reading tar: %w". Map a thrown `TarError` (corrupt member
+            // header/body after the manifest) to `.payloadNotFound` so no
+            // raw `TarError` escapes.
+            let next: TarEntry?
+            do {
+                next = try tar.next()
+            } catch {
+                throw ArtifactError.payloadNotFound("reading tar: \(error)")
+            }
+            guard let header = next else {
                 throw ArtifactError.payloadNotFound(
                     "payload member \"\(manifest.payload.name)\" not found"
                 )

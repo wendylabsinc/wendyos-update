@@ -54,7 +54,15 @@ private func sha256Hex(_ bytes: [UInt8]) -> String {
 /// identical to the uncompressed bytes — the digests can be computed
 /// directly over `payloadBody` in-test without a real (de)compressor.
 private func manifestJSON(payloadBody: [UInt8], compressedSHA256: String = "") -> [UInt8] {
-    let sha256 = sha256Hex(payloadBody)
+    manifestJSON(payloadSize: payloadBody.count, sha256: sha256Hex(payloadBody), compressedSHA256: compressedSHA256)
+}
+
+/// Like `manifestJSON(payloadBody:...)` but lets a test set
+/// `payload.sha256` to an arbitrary 64-hex value independent of the stored
+/// bytes — needed to prove the tee hashes the STORED (compressed) bytes
+/// while `verifyPayloadDigests` compares the caller-supplied uncompressed
+/// digest against `payload.sha256`.
+private func manifestJSON(payloadSize: Int, sha256: String, compressedSHA256: String) -> [UInt8] {
     let json = """
         {
           "format_version": 1,
@@ -63,7 +71,7 @@ private func manifestJSON(payloadBody: [UInt8], compressedSHA256: String = "") -
           "compatible_devices": ["jetson-agx-thor"],
           "payload": {
             "name": "payload",
-            "size": \(payloadBody.count),
+            "size": \(payloadSize),
             "sha256": "\(sha256)",
             "compressed_sha256": "\(compressedSHA256)",
             "compression": "none"
@@ -160,8 +168,124 @@ private func readAll(_ stream: PayloadStream) throws -> [UInt8] {
     try writer.write(payloadBody[...])
     try writer.finish()
 
-    #expect(throws: (any Error).self) {
+    #expect(throws: ArtifactError.self) {
         _ = try ArtifactReader.open(TarReader(makeSource(sink.bytes)))
+    }
+}
+
+@Test func openThrowsArtifactErrorOnGarbageNonTarStream() throws {
+    // A block of non-zero garbage is neither a valid ustar header nor a
+    // clean EOF: `TarReader.next()` throws `TarError`, which `open` must
+    // wrap as `ArtifactError.notTar` — no raw `TarError` may escape.
+    let garbage = [UInt8](repeating: 0x41, count: 512)
+
+    #expect(throws: ArtifactError.self) {
+        _ = try ArtifactReader.open(TarReader(makeSource(garbage)))
+    }
+}
+
+@Test func openThrowsInvalidManifestOnTruncatedManifestBody() throws {
+    // Declare a manifest member whose size is larger than the bytes that
+    // actually follow, so `tar.read` hits `TarError.truncated` mid-body.
+    // reader.go surfaces this through the manifest decode ("parse
+    // manifest.json: %w"), so it must map to `.invalidManifest`.
+    let manifestBytes = manifestJSON(payloadBody: Array("x".utf8))
+    let sink = ByteSink()
+    let writer = TarWriter { sink.write($0) }
+    // Header claims the real manifest size, but we only write the first
+    // half of the body and then stop the stream (no finish/trailer).
+    try writer.writeHeader(name: "manifest.json", size: Int64(manifestBytes.count), mode: 0o644)
+    let half = manifestBytes.count / 2
+    try writer.write(manifestBytes[0..<half])
+    // Truncate: feed only the bytes emitted so far, so the reader runs out
+    // mid-manifest.
+    #expect(throws: ArtifactError.self) {
+        _ = try ArtifactReader.open(TarReader(makeSource(sink.bytes)))
+    }
+}
+
+@Test func payloadThrowsArtifactErrorOnUnexpectedMemberBeforePayload() throws {
+    let payloadBody = Array("payload-bytes-go-here".utf8)
+    let manifestBytes = manifestJSON(payloadBody: payloadBody)
+    // A member named neither "manifest.sig" nor the payload name appears
+    // before the payload -> `.payloadNotFound`.
+    let archive = try buildArchive(
+        manifestBytes: manifestBytes,
+        members: [("some-stray-file", Array("nope".utf8)), ("payload", payloadBody)]
+    )
+
+    let reader = try ArtifactReader.open(TarReader(makeSource(archive)))
+    #expect(throws: ArtifactError.self) {
+        _ = try reader.payload()
+    }
+}
+
+@Test func verifyPayloadDigestsThrowsWhenCalledBeforePayload() throws {
+    let payloadBody = Array("payload-bytes-go-here".utf8)
+    let manifestBytes = manifestJSON(payloadBody: payloadBody)
+    let archive = try buildArchive(manifestBytes: manifestBytes, members: [("payload", payloadBody)])
+
+    let reader = try ArtifactReader.open(TarReader(makeSource(archive)))
+    #expect(throws: ArtifactError.self) {
+        try reader.verifyPayloadDigests(uncompressedSHA256: sha256Hex(payloadBody))
+    }
+}
+
+@Test func verifyPayloadDigestsHashesStoredBytesNotUncompressed() throws {
+    // Stored (compressed) bytes and the "uncompressed" digest are made
+    // deliberately DIFFERENT: with compression "none" the tar-stored bytes
+    // == `storedBytes`, so the tee's digest is sha256(storedBytes). We set
+    // that as `compressed_sha256`, and set `sha256` (the uncompressed
+    // digest) to an unrelated value we then pass to verify. If the tee
+    // mistakenly hashed the "uncompressed" side, the compressed check would
+    // fail — so this passing proves the tee hashes the stored bytes.
+    let storedBytes = Array("stored-compressed-bytes".utf8)
+    let compressedDigest = sha256Hex(storedBytes)
+    let fakeUncompressedDigest = String(repeating: "1", count: 64)
+    #expect(compressedDigest != fakeUncompressedDigest)
+
+    let manifestBytes = manifestJSON(
+        payloadSize: storedBytes.count,
+        sha256: fakeUncompressedDigest,
+        compressedSHA256: compressedDigest
+    )
+    let archive = try buildArchive(manifestBytes: manifestBytes, members: [("payload", storedBytes)])
+
+    let reader = try ArtifactReader.open(TarReader(makeSource(archive)))
+    let stream = try reader.payload()
+    _ = try readAll(stream)
+
+    // Passes: uncompressed matches manifest.sha256 (both the fake value),
+    // and the tee's digest of the stored bytes matches compressed_sha256.
+    try reader.verifyPayloadDigests(uncompressedSHA256: fakeUncompressedDigest)
+}
+
+@Test func verifyPayloadDigestsThrowsOnWrongCompressedHash() throws {
+    let storedBytes = Array("stored-compressed-bytes".utf8)
+    let fakeUncompressedDigest = String(repeating: "1", count: 64)
+    let wrongCompressedDigest = String(repeating: "2", count: 64)
+    #expect(sha256Hex(storedBytes) != wrongCompressedDigest)
+
+    let manifestBytes = manifestJSON(
+        payloadSize: storedBytes.count,
+        sha256: fakeUncompressedDigest,
+        compressedSHA256: wrongCompressedDigest
+    )
+    let archive = try buildArchive(manifestBytes: manifestBytes, members: [("payload", storedBytes)])
+
+    let reader = try ArtifactReader.open(TarReader(makeSource(archive)))
+    let stream = try reader.payload()
+    _ = try readAll(stream)
+
+    // Uncompressed digest matches, but the tee's digest of the stored
+    // bytes disagrees with `compressed_sha256` -> `.sha256Mismatch`.
+    do {
+        try reader.verifyPayloadDigests(uncompressedSHA256: fakeUncompressedDigest)
+        Issue.record("expected .sha256Mismatch on wrong compressed digest")
+    } catch let ArtifactError.sha256Mismatch(message) {
+        #expect(message.contains(wrongCompressedDigest))
+    } catch {
+        Issue.record("expected .sha256Mismatch, got \(error)")
     }
 }
 
