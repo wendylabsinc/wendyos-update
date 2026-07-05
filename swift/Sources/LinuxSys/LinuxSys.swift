@@ -7,6 +7,11 @@ import Glibc
 public struct SysError: Error, Equatable {
     public let errno: Int32
     public let op: String
+
+    public init(errno: Int32, op: String) {
+        self.errno = errno
+        self.op = op
+    }
 }
 
 /// Thin wrapper over the raw Linux syscalls/ioctls wendyos-update needs

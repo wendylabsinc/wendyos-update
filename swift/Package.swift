@@ -26,6 +26,21 @@ let package = Package(
     products: [
         .executable(name: "wendyos-update", targets: ["WendyUpdate"])
     ],
+    dependencies: [
+        // Pinned to an exact beta tag (rather than a `from:`/`upToNextMinor`
+        // range) because SwiftPM version ranges don't reliably resolve
+        // pre-release tags — `exact:` sidesteps that entirely and pins
+        // PlatformIO's `RealCommandRunner` to the API this was built
+        // against.
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.0-beta.1"),
+        // swift-subprocess's own `Executable`/`Environment` APIs take a
+        // `FilePath` from this package's `SystemPackage` product (it
+        // re-exports Apple's toolchain-provided `System` module where that
+        // exists, and provides its own implementation where it doesn't) —
+        // depended on directly here so PlatformIO can construct `FilePath`
+        // values without guessing which module the toolchain provides.
+        .package(url: "https://github.com/apple/swift-system.git", from: "1.5.0"),
+    ],
     targets: [
         .executableTarget(
             name: "WendyUpdate",
@@ -55,6 +70,25 @@ let package = Package(
         .testTarget(
             name: "LinuxSysTests",
             dependencies: ["LinuxSys"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "PlatformIO",
+            dependencies: [
+                "LinuxSys",
+                .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "SystemPackage", package: "swift-system"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "PlatformIOTesting",
+            dependencies: ["PlatformIO"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "PlatformIOTests",
+            dependencies: ["PlatformIO", "PlatformIOTesting"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
