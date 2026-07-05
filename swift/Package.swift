@@ -166,5 +166,15 @@ let package = Package(
             dependencies: ["Connector"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .target(
+            name: "Engine",
+            dependencies: ["Connector", "Model", "PlatformIO", "CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "EngineTests",
+            dependencies: ["Engine", "PlatformIO", "PlatformIOTesting", "Connector"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
