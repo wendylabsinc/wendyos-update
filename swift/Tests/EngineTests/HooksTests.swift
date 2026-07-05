@@ -69,20 +69,28 @@ struct RunHooksTests {
         ])
     }
 
-    @Test func passesWendyPhaseAndCallerEnvToEachHook() async throws {
+    @Test func eachHookReceivesWendyPhasePlusTheCallerEnv() async throws {
         let fs = FakeFileStore()
         writeHook(fs, "/hooks/pre-install.d/10-a", executable: true)
+        writeHook(fs, "/hooks/pre-install.d/20-b", executable: true)
         let runner = FakeCommandRunner()
         let engine = makeEngine(fs: fs, runner: runner)
 
-        try await engine.runHooks(HookPreInstall, ["WENDY_ARTIFACT_NAME": "demo"])
+        // The frozen WENDY_* contract handed to third-party hooks: the six
+        // keys hookEnv builds, plus WENDY_PHASE injected per-phase by
+        // runHooks. Assert every hook invocation saw exactly this set.
+        let callerEnv = engine.hookEnv(
+            name: "demo-image", version: "0.2.0", target: .b, cur: .a, blUpdate: true
+        )
+        try await engine.runHooks(HookPreInstall, callerEnv)
 
-        // FakeCommandRunner doesn't record the env it was called with
-        // directly on the invocation list, but a scripted non-zero exit
-        // proves runHooks reached runStreaming at all; the env plumbing
-        // itself is exercised end-to-end by hookEnv's own test below plus
-        // the phase/order tests here. No further assertion needed.
-        #expect(runner.invocations.count == 1)
+        var expected = callerEnv
+        expected["WENDY_PHASE"] = HookPreInstall
+
+        #expect(runner.invocationEnvs.count == 2)
+        for env in runner.invocationEnvs {
+            #expect(env == expected)
+        }
     }
 
     @Test func nonZeroExitOnAHookThrowsHookErrorWithExitCodeOne() async throws {
@@ -130,6 +138,23 @@ struct RunHooksTests {
         let engine = makeEngine(fs: FakeFileStore())
 
         try await engine.runHooks(HookPreInstall, [:])
+    }
+
+    @Test func presentButUnreadableDirectoryThrowsInsteadOfPassing() async throws {
+        // A gating phase must fail CLOSED on a dir error that isn't
+        // not-found (e.g. EACCES on a present hooks dir) — mirrors Go
+        // returning every non-`os.IsNotExist` error rather than skipping
+        // the gate. Only a truly absent dir is a pass.
+        let fs = FakeFileStore()
+        fs.markUnreadable("/hooks/pre-install.d")
+        let runner = FakeCommandRunner()
+        let engine = makeEngine(fs: fs, runner: runner)
+
+        await #expect(throws: FakeFileStoreError.self) {
+            try await engine.runHooks(HookPreInstall, [:])
+        }
+        // The gate error propagated before any hook could run.
+        #expect(runner.invocations.isEmpty)
     }
 
     @Test func emptyDirectoryPasses() async throws {

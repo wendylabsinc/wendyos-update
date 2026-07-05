@@ -13,8 +13,19 @@ public final class FakeFileStore: FileStore, @unchecked Sendable {
     private var files: [String: [UInt8]] = [:]
     private var executableFiles: Set<String> = []
     private var directories: Set<String> = ["/"]
+    private var unreadableDirs: Set<String> = []
 
     public init() {}
+
+    /// Marks `path` as a directory that `exists` reports present but whose
+    /// `listDir` throws a non-not-found error — models a present-but-
+    /// unreadable hooks dir (e.g. EACCES) so tests can prove the engine
+    /// fails a gating phase closed rather than swallowing the error.
+    public func markUnreadable(_ path: String) {
+        let path = Self.normalize(path)
+        try? mkdirp(path, mode: 0o755)
+        unreadableDirs.insert(path)
+    }
 
     public func read(_ path: String) throws -> [UInt8] {
         guard let bytes = files[Self.normalize(path)] else {
@@ -58,6 +69,9 @@ public final class FakeFileStore: FileStore, @unchecked Sendable {
 
     public func listDir(_ path: String) throws -> [DirEntry] {
         let path = Self.normalize(path)
+        if unreadableDirs.contains(path) {
+            throw FakeFileStoreError.unreadable(path)
+        }
         guard directories.contains(path) else {
             throw FakeFileStoreError.notFound(path)
         }
@@ -86,6 +100,8 @@ public final class FakeFileStore: FileStore, @unchecked Sendable {
 
 public enum FakeFileStoreError: Error, Equatable {
     case notFound(String)
+    /// A present directory whose contents can't be listed (e.g. EACCES).
+    case unreadable(String)
 }
 
 /// A `CommandRunner` that records every `argv` it's asked to run and
@@ -93,6 +109,11 @@ public enum FakeFileStoreError: Error, Equatable {
 /// commands default to a clean exit with no output.
 public final class FakeCommandRunner: CommandRunner, @unchecked Sendable {
     public private(set) var invocations: [[String]] = []
+    /// The `env` override dict passed to each `runStreaming` call, indexed
+    /// in lockstep with `invocations` (only `runStreaming` carries an env;
+    /// `run` records `nil`). Lets hook tests assert the `WENDY_*` contract
+    /// each hook actually received, not just the argv it ran.
+    public private(set) var invocationEnvs: [[String: String]?] = []
     private var scripts: [String: CommandResult] = [:]
 
     public init() {}
@@ -105,6 +126,7 @@ public final class FakeCommandRunner: CommandRunner, @unchecked Sendable {
 
     public func run(_ argv: [String], env: [String: String]?, stdin: [UInt8]?) async throws -> CommandResult {
         invocations.append(argv)
+        invocationEnvs.append(env)
         guard let command = argv.first else {
             return CommandResult(exitCode: 0, stdout: [], stderr: [])
         }
@@ -117,6 +139,7 @@ public final class FakeCommandRunner: CommandRunner, @unchecked Sendable {
         onLine: @Sendable (String) -> Void
     ) async throws -> Int32 {
         invocations.append(argv)
+        invocationEnvs.append(env)
         guard let command = argv.first, let scripted = scripts[command] else {
             return 0
         }

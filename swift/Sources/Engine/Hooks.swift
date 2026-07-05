@@ -58,14 +58,15 @@ extension Engine {
     /// `Engine.runHooks`.
     public func runHooks(_ phase: String, _ env: [String: String]) async throws {
         let dir = hookDir(phase)
-        let entries: [DirEntry]
-        do {
-            entries = try fs.listDir(dir)
-        } catch {
-            // Missing directory is a pass — mirrors Go's
-            // `os.IsNotExist(err) -> return nil`.
-            return
-        }
+        // A missing directory is a pass (mirrors Go's
+        // `os.IsNotExist(err) -> return nil`), but any OTHER `listDir`
+        // failure — e.g. a present-but-unreadable dir — MUST propagate so
+        // a gating phase fails closed rather than silently skipping the
+        // gate. Go checks `os.IsNotExist` specifically and returns every
+        // other error; guarding on existence first reproduces that without
+        // needing a typed not-found error out of `FileStore`.
+        guard fs.exists(dir) else { return }
+        let entries = try fs.listDir(dir)
 
         let names = entries
             .filter { !$0.isDir && $0.isExecutable }
