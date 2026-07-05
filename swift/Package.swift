@@ -45,6 +45,15 @@ let package = Package(
         // encode) instead of Foundation's Codable/JSONDecoder/JSONEncoder —
         // see swift/Sources/Model/Model.swift for why.
         .package(url: "https://github.com/orlandos-nl/swift-json.git", from: "2.5.0"),
+        // ustar-format tar streaming reader/writer for `.wendy` artifacts —
+        // used by the Artifact target's reader (Task 3.2) to walk the
+        // manifest.json/payload members without buffering the whole
+        // archive.
+        .package(path: "Packages/Tar"),
+        // SHA-256 for the Artifact target's reader: tees the (still
+        // compressed) payload bytes through an incremental digest and
+        // verifies it against `manifest.payload.compressed_sha256`.
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
     ],
     targets: [
         .executableTarget(
@@ -115,7 +124,11 @@ let package = Package(
         ),
         .target(
             name: "Artifact",
-            dependencies: ["Model", "CLIError"],
+            dependencies: [
+                "Model", "CLIError",
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
