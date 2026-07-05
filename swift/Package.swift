@@ -64,10 +64,29 @@ let package = Package(
         // bootstrapped later, by the executable (Task 7.1); this package
         // only supplies the `Logger` API used to emit through it.
         .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        // `WendyLog` — Task 7.1's stderr log-rendering (journal/tty/plain
+        // modes) + progress-bar package. The `WendyUpdate` executable
+        // (Task 10.1) bootstraps `swift-log`'s `LoggingSystem` with the
+        // handler this package builds.
+        .package(path: "Packages/WendyLog"),
+        // Verb dispatch for the `wendyos-update` executable (Task 10.1):
+        // `install`/`commit`/`rollback`/`switch`/`status`/`mark-good`/
+        // `pack`/`verify-boot`/`version`, ported from `cmd/wendyos-update/
+        // main.go`'s `switch os.Args[1]`.
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
     ],
     targets: [
         .executableTarget(
             name: "WendyUpdate",
+            dependencies: [
+                "Engine", "Connector", "TegraUEFI", "UBootEnv", "Model", "PlatformIO",
+                "CLIError", "Artifact", "BlockDev", "LinuxSys",
+                .product(name: "WendyLog", package: "WendyLog"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "IkigaJSON", package: "swift-json"),
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: wantsStaticLink
                 ? [
@@ -80,7 +99,11 @@ let package = Package(
         ),
         .testTarget(
             name: "WendyUpdateTests",
-            dependencies: ["WendyUpdate"],
+            dependencies: [
+                "WendyUpdate", "Engine", "Connector", "Model", "PlatformIO", "PlatformIOTesting",
+                "CLIError", "Artifact", "BlockDev",
+                .product(name: "WendyLog", package: "WendyLog"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .systemLibrary(

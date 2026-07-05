@@ -91,4 +91,12 @@ extension Engine {
             diagnostics: conn.diagnostics(verbose: verbose)
         )
     }
+
+    /// The manual escape hatch: reset slot health via the connector, then
+    /// clear any pending update state. Ports `Engine.MarkGood` verbatim
+    /// (internal/engine/engine.go).
+    public func markGood() throws {
+        try conn.markGood()
+        try clearState()
+    }
 }

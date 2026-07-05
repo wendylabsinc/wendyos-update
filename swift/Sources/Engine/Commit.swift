@@ -59,11 +59,19 @@ public struct CommitError: Error, Equatable, ExitCoded {
 public struct RollbackError: Error, Equatable, ExitCoded {
     public let message: String
     public var exitCode: Int32 { 1 }
+
+    public init(message: String) {
+        self.message = message
+    }
 }
 
 public struct SwitchError: Error, Equatable, ExitCoded {
     public let message: String
     public var exitCode: Int32 { 1 }
+
+    public init(message: String) {
+        self.message = message
+    }
 }
 
 /// Tells the caller whether a reboot is needed to finish the rollback
