@@ -54,6 +54,11 @@ let package = Package(
         // compressed) payload bytes through an incremental digest and
         // verifies it against `manifest.payload.compressed_sha256`.
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+        // zstd/gzip streaming (de)compression for the Artifact target's
+        // writer (Task 3.4): compresses a rootfs image into the `.wendy`
+        // payload member. The wos-swift test image already has
+        // libzstd-dev/zlib1g-dev installed (see CZstd's `providers`).
+        .package(path: "Packages/Zstd"),
     ],
     targets: [
         .executableTarget(
@@ -125,9 +130,10 @@ let package = Package(
         .target(
             name: "Artifact",
             dependencies: [
-                "Model", "CLIError",
+                "Model", "CLIError", "LinuxSys",
                 .product(name: "Tar", package: "Tar"),
                 .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
