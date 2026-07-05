@@ -182,6 +182,16 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(
+            name: "UBootEnv",
+            dependencies: ["Connector", "PlatformIO", "CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "UBootEnvTests",
+            dependencies: ["UBootEnv", "PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
             name: "Engine",
             dependencies: [
                 "Connector", "Model", "PlatformIO", "CLIError", "Artifact", "BlockDev",
