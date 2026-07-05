@@ -11,9 +11,18 @@
 #   scripts/dsw build -c release   # swift build
 #   scripts/dsw <any swift args>
 set -euo pipefail
-IMG="${WOS_SWIFT_IMAGE:-swiftlang/swift:nightly-6.3-jammy}"
+# Default to the built dev image (swift/docker/Dockerfile): base toolchain
+# PLUS libzstd-dev (for the Zstd package's CZstd target) and the static
+# Linux SDK (for the release cross build). Build it once with:
+#   docker build -t wos-swift swift/docker
+# Override with WOS_SWIFT_IMAGE=... (e.g. the bare swiftlang base).
+IMG="${WOS_SWIFT_IMAGE:-wos-swift}"
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 [ -d "$REPO/swift" ] || { echo "dsw: $REPO/swift does not exist yet" >&2; exit 2; }
+if [ -z "${WOS_SWIFT_IMAGE:-}" ] && ! docker image inspect "$IMG" >/dev/null 2>&1; then
+  echo "dsw: image '$IMG' not found — building it (docker build -t $IMG swift/docker)…" >&2
+  docker build -t "$IMG" "$REPO/swift/docker" >&2
+fi
 exec docker run --rm \
   -v "$REPO/swift:/w" -w /w \
   -v wos-swift-build:/w/.build \
