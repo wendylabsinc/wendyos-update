@@ -5,26 +5,11 @@ import Engine
 import PlatformIO
 import PlatformIOTesting
 
-/// Minimal fake `Connector` — hooks never call into it (the phase/env
-/// inputs to `runHooks`/`hookEnv` are plain values, and `hookEnv` takes
-/// `Slot`s directly rather than resolving them itself), so every method
-/// just returns an inert default. Mirrors the copy in StateTests.swift
-/// (each test file keeps its own `private` fake rather than sharing one
-/// across the target).
-private final class FakeConnector: Connector {
-    let name = "fake"
-    func currentSlot() throws -> Slot { .a }
-    func partition(for s: Slot) throws -> String { "" }
-    func prepareTarget(_ s: Slot) throws {}
-    func swapSlot(_ s: Slot, stagePlatformUpdate: Bool) throws {}
-    func bootIsCompromised() throws -> Bool { false }
-    func verifyPlatformUpdate(bootloaderUpdate: Bool) throws {}
-    func abortPlatformUpdate() throws {}
-    func markGood() throws {}
-    func diagnostics(verbose: Bool) -> [String: String] { [:] }
-    func slotStatus(_ s: Slot) -> SlotStatus { SlotStatus() }
-    func systemStatus() -> [KV] { [] }
-}
+// Hooks never call into the connector (the phase/env inputs to
+// `runHooks`/`hookEnv` are plain values, and `hookEnv` takes `Slot`s
+// directly rather than resolving them itself) — `FakeConnector`
+// (FakeConnector.swift, shared across this target since Task 6.4) is used
+// here purely as an inert stand-in.
 
 /// Builds an `Engine` wired to fakes, overriding just the pieces a given
 /// test cares about.

@@ -6,26 +6,10 @@ import Model
 import PlatformIO
 import PlatformIOTesting
 
-/// Minimal fake `Connector` — Task 6.1 only exercises state persistence and
-/// the policy helpers (`deviceType`/`versionAtLeast`), neither of which
-/// calls into the connector, so every method just throws a sentinel if
-/// that assumption is ever wrong. (`ConnectorTests`'s own fake is
-/// `private` to that test target, so this is a small standalone copy
-/// rather than a shared import.)
-private final class FakeConnector: Connector {
-    let name = "fake"
-    func currentSlot() throws -> Slot { .a }
-    func partition(for s: Slot) throws -> String { "" }
-    func prepareTarget(_ s: Slot) throws {}
-    func swapSlot(_ s: Slot, stagePlatformUpdate: Bool) throws {}
-    func bootIsCompromised() throws -> Bool { false }
-    func verifyPlatformUpdate(bootloaderUpdate: Bool) throws {}
-    func abortPlatformUpdate() throws {}
-    func markGood() throws {}
-    func diagnostics(verbose: Bool) -> [String: String] { [:] }
-    func slotStatus(_ s: Slot) -> SlotStatus { SlotStatus() }
-    func systemStatus() -> [KV] { [] }
-}
+// Task 6.1 only exercises state persistence and the policy helpers
+// (`deviceType`/`versionAtLeast`), neither of which calls into the
+// connector — `FakeConnector` (FakeConnector.swift, shared across this
+// target since Task 6.4) is used here purely as an inert stand-in.
 
 /// Builds an `Engine` wired to fakes, overriding just the pieces a given
 /// test cares about.

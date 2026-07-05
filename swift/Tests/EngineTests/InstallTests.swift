@@ -16,69 +16,11 @@ import Tar
 // persisting state, save(written), prepareTarget, swap, save(swapped),
 // post-install hook with unwind-then-rethrow on failure.
 
-// MARK: - FakeConnector
-
-private struct FakeConnectorError: Error, Equatable {
-    let message: String
-}
-
-/// A `Connector` that records every call (in order) it receives, with
-/// scriptable per-method errors and a scriptable `InstallPreflighter`
-/// result. Unlike the minimal fakes in StateTests.swift/HooksTests.swift
-/// (which `install` never exercises), this one is driven directly by the
-/// sequence under test, so its call log IS the assertion surface for
-/// ordering.
-private final class FakeConnector: Connector, InstallPreflighter, @unchecked Sendable {
-    let name = "fake"
-
-    var currentSlotValue: Slot = .a
-    var partitions: [Slot: String] = [.a: "/dev/fake-a", .b: "/dev/fake-b"]
-
-    var preflightError: Error?
-    var prepareTargetError: Error?
-    var swapSlotInstallError: Error?
-    var swapSlotRollbackError: Error?
-    var abortPlatformUpdateError: Error?
-
-    private(set) var callLog: [String] = []
-
-    func currentSlot() throws -> Slot { currentSlotValue }
-    func partition(for s: Slot) throws -> String { partitions[s] ?? "" }
-
-    func prepareTarget(_ s: Slot) throws {
-        callLog.append("prepareTarget(\(s))")
-        if let err = prepareTargetError { throw err }
-    }
-
-    func swapSlot(_ s: Slot, stagePlatformUpdate: Bool) throws {
-        callLog.append("swapSlot(\(s), stage:\(stagePlatformUpdate))")
-        if stagePlatformUpdate {
-            if let err = swapSlotInstallError { throw err }
-        } else {
-            if let err = swapSlotRollbackError { throw err }
-        }
-    }
-
-    func bootIsCompromised() throws -> Bool { false }
-    func verifyPlatformUpdate(bootloaderUpdate: Bool) throws {}
-
-    func abortPlatformUpdate() throws {
-        callLog.append("abortPlatformUpdate")
-        if let err = abortPlatformUpdateError { throw err }
-    }
-
-    func markGood() throws {}
-    func diagnostics(verbose: Bool) -> [String: String] { [:] }
-    func slotStatus(_ s: Slot) -> SlotStatus { SlotStatus() }
-    func systemStatus() -> [KV] { [] }
-
-    func preflightInstall() throws {
-        callLog.append("preflightInstall")
-        if let err = preflightError { throw err }
-    }
-}
-
 // MARK: - FileStore that records every state.json write, in order
+//
+// `FakeConnector` itself now lives in FakeConnector.swift (shared across
+// this target's commit/rollback/switch/verify-boot tests too — see that
+// file's header).
 
 /// Wraps a `FakeFileStore`, additionally decoding and recording every
 /// `state.json` write — the only way to observe the written->swapped
