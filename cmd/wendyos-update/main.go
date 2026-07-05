@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
+	_ "github.com/wendylabsinc/wendyos-update/internal/connector/grubenv"   // register
 	_ "github.com/wendylabsinc/wendyos-update/internal/connector/tegrauefi" // register
 	_ "github.com/wendylabsinc/wendyos-update/internal/connector/ubootenv"  // register
 	"github.com/wendylabsinc/wendyos-update/internal/engine"
