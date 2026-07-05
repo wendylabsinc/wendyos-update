@@ -174,14 +174,19 @@ let package = Package(
         .target(
             name: "Engine",
             dependencies: [
-                "Connector", "Model", "PlatformIO", "CLIError",
+                "Connector", "Model", "PlatformIO", "CLIError", "Artifact", "BlockDev",
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "Zstd", package: "Zstd"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
             name: "EngineTests",
-            dependencies: ["Engine", "Model", "PlatformIO", "PlatformIOTesting", "Connector"],
+            dependencies: [
+                "Engine", "Model", "PlatformIO", "PlatformIOTesting", "Connector", "Artifact", "BlockDev",
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
     ]
