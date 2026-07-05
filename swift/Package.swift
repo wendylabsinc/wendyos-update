@@ -156,5 +156,15 @@ let package = Package(
             dependencies: ["BlockDev", "PlatformIO", "PlatformIOTesting"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .target(
+            name: "Connector",
+            dependencies: ["CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "ConnectorTests",
+            dependencies: ["Connector"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
