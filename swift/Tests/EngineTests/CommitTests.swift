@@ -60,6 +60,7 @@ private final class FailingWriteFileStore: FileStore, @unchecked Sendable {
     func remove(_ path: String) throws { try inner.remove(path) }
     func mkdirp(_ path: String, mode: UInt32) throws { try inner.mkdirp(path, mode: mode) }
     func listDir(_ path: String) throws -> [DirEntry] { try inner.listDir(path) }
+    func resolveSymlink(_ path: String) -> String? { inner.resolveSymlink(path) }
 }
 
 /// A pending `swapped` state targeting slot B, matching what `install`

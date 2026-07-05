@@ -39,6 +39,21 @@ public enum LinuxSys {
         try rawOpen(path, O_RDONLY, op: "open(O_RDONLY)")
     }
 
+    /// Opens `path` for writing, creating it with mode `0644` if it
+    /// doesn't already exist. Unlike `openWriteExisting`, this DOES pass
+    /// `O_CREAT` — needed for the Tegra `OsIndications` efivar, which
+    /// (unlike the `RootfsStatusSlot` variables) may not pre-exist and
+    /// must be created the first time a capsule update is staged (ports
+    /// `os.OpenFile(path, os.O_WRONLY|os.O_CREATE, 0o644)` from
+    /// `tegrauefi/efivar.go`'s `writeVar`).
+    public static func openWriteCreate(_ path: String) throws -> Int32 {
+        try retrying(op: "open(O_WRONLY|O_CREAT)") {
+            path.withCString { cPath in
+                Glibc.open(cPath, O_WRONLY | O_CREAT, 0o644)
+            }
+        }
+    }
+
     /// Writes `buf` via a single `write(2)` call (retried across
     /// `EINTR`), returning the byte count the syscall reported — which
     /// may be less than `buf.count`.

@@ -178,7 +178,7 @@ let package = Package(
         ),
         .testTarget(
             name: "TegraUEFITests",
-            dependencies: ["TegraUEFI"],
+            dependencies: ["TegraUEFI", "PlatformIO", "PlatformIOTesting"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(

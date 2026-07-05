@@ -154,19 +154,51 @@ public enum EfiVar {
     /// (`LinuxSys.openWriteExisting` — unlike Go's `os.O_CREATE` —
     /// deliberately fails loudly on a missing path rather than papering
     /// over it with a plain file; a missing firmware-owned efivar is a
-    /// configuration error, not something to silently fix up).
+    /// configuration error, not something to silently fix up). Used for
+    /// the `RootfsStatusSlot*` variables, which are always pre-existing
+    /// firmware-owned efivars.
     ///
     /// `clearer` is the injectable immutable-clear seam (see
     /// `clearImmutable`). The write loops until the whole payload is
     /// drained — `LinuxSys.write` is a single-`write(2)` shim that may
     /// report a short count, so a one-shot `write` is unsafe for anything
     /// larger than the current 8-byte status payload. The 12-byte
-    /// OsIndications payloads (Tasks 8.2/8.3) build on this, so the loop
-    /// must be here, not in each caller.
+    /// `OsIndications` payload (Task 8.2's `SwapSlot` capsule-staging
+    /// path) builds on this via `writeVarCreating`, so the loop must be
+    /// here, not in each caller.
     public static func writeVar(
         _ path: String,
         _ payload: [UInt8],
         clearImmutable clearer: ImmutableClearer = realClearer
+    ) throws {
+        try writeVar(path, payload, open: LinuxSys.openWriteExisting, clearImmutable: clearer)
+    }
+
+    /// Writes a complete efivar payload exactly like `writeVar`, except
+    /// it CREATES the variable (mode `0644`) if it doesn't already exist,
+    /// via `LinuxSys.openWriteCreate`. Used only for `OsIndications`
+    /// (Tegra's capsule-update staging path): unlike the
+    /// `RootfsStatusSlot` variables, it is not guaranteed to pre-exist on
+    /// a device that has never run a capsule update. Ports Go's
+    /// `writeVar`, which always opened with `os.O_WRONLY|os.O_CREATE`
+    /// (Swift's `RootfsStatusSlot` path deliberately narrowed that to
+    /// no-create; `OsIndications` needs the original create-capable
+    /// behavior back).
+    public static func writeVarCreating(
+        _ path: String,
+        _ payload: [UInt8],
+        clearImmutable clearer: ImmutableClearer = realClearer
+    ) throws {
+        try writeVar(path, payload, open: LinuxSys.openWriteCreate, clearImmutable: clearer)
+    }
+
+    /// Shared body of `writeVar`/`writeVarCreating`: clear-if-exists, open
+    /// via `open`, then loop `write(2)` until `payload` is fully drained.
+    private static func writeVar(
+        _ path: String,
+        _ payload: [UInt8],
+        open: (String) throws -> Int32,
+        clearImmutable clearer: ImmutableClearer
     ) throws {
         if pathExists(path) {
             try clearImmutable(path, using: clearer)
@@ -174,7 +206,7 @@ public enum EfiVar {
 
         let fd: Int32
         do {
-            fd = try LinuxSys.openWriteExisting(path)
+            fd = try open(path)
         } catch {
             throw EfiVarError.write("open \(path): \(error)")
         }

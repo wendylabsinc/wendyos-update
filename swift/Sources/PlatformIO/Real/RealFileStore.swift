@@ -96,6 +96,23 @@ public struct RealFileStore: FileStore {
         }
     }
 
+    /// `realpath(3)`: resolves every symlink in `path` (including
+    /// intermediate directory components) to an absolute, canonical path.
+    /// Requires the final target to exist, exactly like Go's
+    /// `filepath.EvalSymlinks`; returns `nil` on any failure (missing
+    /// path, dangling symlink, ELOOP, ...) rather than throwing, since
+    /// callers use this as a resolution *probe* across several candidate
+    /// paths (see `TegraUEFI.partition(for:)`), not as a hard read.
+    public func resolveSymlink(_ path: String) -> String? {
+        var buf = [Int8](repeating: 0, count: Int(PATH_MAX))
+        guard let resolved = path.withCString({ cPath in
+            Glibc.realpath(cPath, &buf)
+        }) else {
+            return nil
+        }
+        return String(cString: resolved)
+    }
+
     private static func parentDirectory(of path: String) -> String {
         (path as NSString).deletingLastPathComponent
     }

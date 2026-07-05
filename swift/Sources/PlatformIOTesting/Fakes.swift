@@ -14,8 +14,20 @@ public final class FakeFileStore: FileStore, @unchecked Sendable {
     private var executableFiles: Set<String> = []
     private var directories: Set<String> = ["/"]
     private var unreadableDirs: Set<String> = []
+    private var symlinks: [String: String] = [:]
 
     public init() {}
+
+    /// Records `path` as a symlink resolving to `target` — models e.g.
+    /// `/dev/disk/by-partlabel/APP -> /dev/nvme0n1p1` without a real
+    /// filesystem. `target` is returned verbatim by `resolveSymlink`,
+    /// including when it is itself another symlink path recorded via a
+    /// separate `symlink` call (chains resolve one hop per call, matching
+    /// how the tests build them — callers needing a multi-hop chain call
+    /// `symlink` for each hop against the previous target).
+    public func symlink(_ path: String, to target: String) {
+        symlinks[Self.normalize(path)] = target
+    }
 
     /// Marks `path` as a directory that `exists` reports present but whose
     /// `listDir` throws a non-not-found error — models a present-but-
@@ -85,6 +97,25 @@ public final class FakeFileStore: FileStore, @unchecked Sendable {
             entries[name] = DirEntry(name: name, isDir: true, isExecutable: false)
         }
         return entries.values.sorted { $0.name < $1.name }
+    }
+
+    /// Resolves `path` through the recorded `symlink` map (following
+    /// chains until a path isn't itself a recorded symlink), matching
+    /// `filepath.EvalSymlinks`'s "returns the target's canonical path"
+    /// contract. A path that isn't a recorded symlink but does exist as a
+    /// plain file resolves to itself; anything else is `nil`.
+    public func resolveSymlink(_ path: String) -> String? {
+        var current = Self.normalize(path)
+        var hops = 0
+        while let target = symlinks[current] {
+            current = target
+            hops += 1
+            if hops > 40 { return nil }  // cycle guard, mirrors ELOOP
+        }
+        if current != Self.normalize(path) {
+            return current  // resolved through at least one symlink hop
+        }
+        return exists(current) ? current : nil
     }
 
     private static func normalize(_ path: String) -> String {

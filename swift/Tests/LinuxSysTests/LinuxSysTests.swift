@@ -111,6 +111,50 @@ private func createFixtureFile(_ path: String) -> Int32 {
     }
 }
 
+@Test func openWriteCreateCreatesAMissingFileAndWritesToIt() throws {
+    let path = tempPath("write-create")
+    defer { unlink(path) }
+
+    var st = stat()
+    #expect(stat(path, &st) != 0, "fixture must not exist yet")
+
+    let fd = try LinuxSys.openWriteCreate(path)
+    let payload = Array("os-indications".utf8)
+    let written = try payload.withUnsafeBytes { buf in try LinuxSys.write(fd, buf) }
+    #expect(written == payload.count)
+    LinuxSys.close(fd)
+
+    #expect(stat(path, &st) == 0, "openWriteCreate must have created \(path)")
+    #expect(readWholeFile(path) == payload)
+}
+
+@Test func openWriteCreateReusesAnExistingFile() throws {
+    let path = tempPath("write-create-existing")
+    createFixtureFile(path)
+    defer { unlink(path) }
+
+    let fd = try LinuxSys.openWriteCreate(path)
+    let payload = Array("replaced".utf8)
+    _ = try payload.withUnsafeBytes { buf in try LinuxSys.write(fd, buf) }
+    LinuxSys.close(fd)
+
+    #expect(readWholeFile(path) == payload)
+}
+
+private func readWholeFile(_ path: String) -> [UInt8] {
+    let fd = Glibc.open(path, O_RDONLY)
+    guard fd >= 0 else { return [] }
+    defer { Glibc.close(fd) }
+    var out: [UInt8] = []
+    var chunk = [UInt8](repeating: 0, count: 64)
+    while true {
+        let n = chunk.withUnsafeMutableBytes { buf in Glibc.read(fd, buf.baseAddress, buf.count) }
+        if n <= 0 { break }
+        out.append(contentsOf: chunk[0..<n])
+    }
+    return out
+}
+
 @Test func openWriteExistingNeverCreatesAFile() {
     let path = tempPath("no-create")
 

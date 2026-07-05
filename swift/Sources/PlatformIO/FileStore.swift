@@ -26,6 +26,15 @@ public protocol FileStore: Sendable {
 
     /// Lists the immediate children of the directory at `path`.
     func listDir(_ path: String) throws -> [DirEntry]
+
+    /// Resolves `path` to its ultimate target, following any symlinks
+    /// (including intermediate ones), and returns `nil` when `path`
+    /// doesn't (transitively) resolve to something that exists. Mirrors
+    /// Go's `filepath.EvalSymlinks`, used by the Tegra connector's
+    /// `/dev/disk/by-partlabel/*` and `/dev/disk/by-partuuid/*`
+    /// partition-resolution tiers: a plain existing (non-symlink) file
+    /// resolves to itself, matching `EvalSymlinks`.
+    func resolveSymlink(_ path: String) -> String?
 }
 
 /// One entry returned by `FileStore.listDir`.
