@@ -42,6 +42,12 @@ public struct Engine: Sendable {
     public var runner: any CommandRunner
     public var clock: any Clock
     public var env: any EnvReader
+    /// Reads a slot's distro/kernel version for the `status` verb (live for
+    /// the booted slot, a best-effort mount for the inactive one). Defaults
+    /// to `RealVersionProbe()` — a self-contained, dependency-free
+    /// implementation — so every existing `Engine(...)` call site (fixed
+    /// before this field existed) keeps compiling unchanged.
+    public var versionProbe: any VersionProbe
     /// Receives coarse install progress for the CLI's JSON lines. `percent`
     /// is -1 when the total size is unknown. May be nil.
     public var progress: (@Sendable (_ phase: String, _ percent: Int) -> Void)?
@@ -57,6 +63,7 @@ public struct Engine: Sendable {
         runner: any CommandRunner,
         clock: any Clock,
         env: any EnvReader,
+        versionProbe: any VersionProbe = RealVersionProbe(),
         progress: (@Sendable (_ phase: String, _ percent: Int) -> Void)? = nil
     ) {
         self.conn = conn
@@ -69,6 +76,7 @@ public struct Engine: Sendable {
         self.runner = runner
         self.clock = clock
         self.env = env
+        self.versionProbe = versionProbe
         self.progress = progress
     }
 

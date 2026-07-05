@@ -24,6 +24,14 @@ final class FakeConnector: Connector, InstallPreflighter, BootConfirmer, @unchec
 
     var currentSlotValue: Slot = .a
     var partitions: [Slot: String] = [.a: "/dev/fake-a", .b: "/dev/fake-b"]
+    /// When set, `partition(for:)` throws this for every slot instead of
+    /// looking up `partitions` — models a board that can't resolve a
+    /// slot's device node (`status` must fall back to an empty string, not
+    /// propagate the error).
+    var partitionError: Error?
+    var slotStatuses: [Slot: SlotStatus] = [:]
+    var systemStatusValue: [KV] = []
+    var diagnosticsValue: [String: String] = [:]
 
     var preflightError: Error?
     var prepareTargetError: Error?
@@ -53,7 +61,10 @@ final class FakeConnector: Connector, InstallPreflighter, BootConfirmer, @unchec
     // commit/rollback/switch/verify-boot test needs either call's
     // position in the shared log, only its return value or thrown error.
     func currentSlot() throws -> Slot { currentSlotValue }
-    func partition(for s: Slot) throws -> String { partitions[s] ?? "" }
+    func partition(for s: Slot) throws -> String {
+        if let err = partitionError { throw err }
+        return partitions[s] ?? ""
+    }
 
     func prepareTarget(_ s: Slot) throws {
         callLog.append("prepareTarget(\(s))")
@@ -90,9 +101,9 @@ final class FakeConnector: Connector, InstallPreflighter, BootConfirmer, @unchec
         if let err = markGoodError { throw err }
     }
 
-    func diagnostics(verbose: Bool) -> [String: String] { [:] }
-    func slotStatus(_ s: Slot) -> SlotStatus { SlotStatus() }
-    func systemStatus() -> [KV] { [] }
+    func diagnostics(verbose: Bool) -> [String: String] { diagnosticsValue }
+    func slotStatus(_ s: Slot) -> SlotStatus { slotStatuses[s] ?? SlotStatus() }
+    func systemStatus() -> [KV] { systemStatusValue }
 
     func preflightInstall() throws {
         callLog.append("preflightInstall")

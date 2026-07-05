@@ -29,7 +29,11 @@ public struct SlotStatus: Sendable {
     /// Free-form per-slot note (e.g. trial state).
     public var note: String = ""
 
-    public init() {}
+    public init(rootfsHealth: String = "", retries: String = "", note: String = "") {
+        self.rootfsHealth = rootfsHealth
+        self.retries = retries
+        self.note = note
+    }
 }
 
 /// An ordered display key/value pair (system-wide status lines).
