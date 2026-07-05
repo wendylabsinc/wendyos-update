@@ -137,6 +137,115 @@ func TestPreflightInstallPassesWhenRedundancyArmed(t *testing.T) {
 	}
 }
 
+// fakeSoC writes a device-tree "compatible" property under the controller's
+// RootDir so the SoC gates (bootChainSlotAB / capsuleUpdateEffective) resolve.
+// compatible is a NUL-separated list of "vendor,soc" strings.
+func fakeSoC(t *testing.T, c *Controller, soc string) {
+	t.Helper()
+	dir := filepath.Join(c.RootDir, "proc", "device-tree")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	compat := "nvidia,board\x00nvidia," + soc + "\x00"
+	if err := os.WriteFile(filepath.Join(dir, "compatible"), []byte(compat), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// On Orin (tegra234) the rootfs-redundancy layer is unarmable from the OS, so
+// the connector drives the coupled BOOT CHAIN instead: nvbootctrl WITHOUT
+// `-t rootfs`. Thor (tegra264) and any unknown SoC keep the rootfs-redundancy
+// layer (`-t rootfs`).
+func TestBootChainModeBySoC(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		soc       string // "" = no compatible file (unknown SoC)
+		bootChain bool
+	}{
+		{"orin t234 -> boot chain", "tegra234", true},
+		{"thor t264 -> rootfs redundancy", "tegra264", false},
+		{"unknown SoC -> rootfs redundancy", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testController(t)
+			if tc.soc != "" {
+				fakeSoC(t, c, tc.soc)
+			}
+			if got := c.bootChainSlotAB(); got != tc.bootChain {
+				t.Fatalf("bootChainSlotAB = %v, want %v", got, tc.bootChain)
+			}
+			args := strings.Join(c.nvbootctrlSlotArgs(), " ")
+			wantRootfs := !tc.bootChain
+			if strings.Contains(args, "-t rootfs") != wantRootfs {
+				t.Fatalf("nvbootctrlSlotArgs = %q; want -t rootfs present=%v", args, wantRootfs)
+			}
+		})
+	}
+}
+
+// The fix for the original Orin failure: a slot switch on Orin must go to the
+// boot chain (no `-t rootfs`), which flips the coupled rootfs slot without the
+// unarmable RootfsRedundancyLevel var. Thor keeps `-t rootfs`.
+func TestSwapSlotRollbackTargetsCorrectNvbootctrlLayer(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		soc        string
+		wantRootfs bool
+	}{
+		{"orin uses boot chain", "tegra234", false},
+		{"thor uses rootfs redundancy", "tegra264", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testController(t)
+			fakeSoC(t, c, tc.soc)
+			logPath := filepath.Join(t.TempDir(), "calls.log")
+			c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n")
+
+			// rollback path (stagePlatformUpdate=false): pure nvbootctrl re-point.
+			if err := c.SwapSlot(connector.SlotB, false); err != nil {
+				t.Fatalf("SwapSlot rollback: %v", err)
+			}
+			data, _ := os.ReadFile(logPath)
+			if !strings.Contains(string(data), "set-active-boot-slot 1") {
+				t.Fatalf("SwapSlot did not set-active-boot-slot 1; calls:\n%s", data)
+			}
+			if strings.Contains(string(data), "-t rootfs") != tc.wantRootfs {
+				t.Fatalf("SwapSlot -t rootfs present=%v, want %v; calls:\n%s",
+					strings.Contains(string(data), "-t rootfs"), tc.wantRootfs, data)
+			}
+		})
+	}
+}
+
+// On Orin, boot-chain A/B needs no RootfsRedundancyLevel, so PreflightInstall
+// must PASS even though the var is absent — the exact state that (correctly)
+// blocks on the rootfs-redundancy path.
+func TestPreflightInstallPassesOnBootChainOrin(t *testing.T) {
+	c := testController(t) // RootDir has no RootfsRedundancyLevel var
+	fakeSoC(t, c, "tegra234")
+	if err := c.PreflightInstall(); err != nil {
+		t.Fatalf("PreflightInstall should pass on Orin (boot-chain A/B, no redundancy var needed); got: %v", err)
+	}
+}
+
+// CurrentSlot on Orin reads the boot-chain slot (no `-t rootfs`); the coupled
+// rootfs slot is the same value.
+func TestCurrentSlotUsesBootChainOnOrin(t *testing.T) {
+	c := testController(t)
+	fakeSoC(t, c, "tegra234")
+	logPath := filepath.Join(t.TempDir(), "calls.log")
+	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "1\n")
+
+	got, err := c.CurrentSlot()
+	if err != nil || got != connector.SlotB {
+		t.Fatalf("CurrentSlot = %v, %v; want B, nil", got, err)
+	}
+	data, _ := os.ReadFile(logPath)
+	if strings.Contains(string(data), "-t rootfs") {
+		t.Fatalf("CurrentSlot used -t rootfs on Orin (want boot chain); calls:\n%s", data)
+	}
+}
+
 func TestSlotOther(t *testing.T) {
 	if connector.SlotA.Other() != connector.SlotB || connector.SlotB.Other() != connector.SlotA {
 		t.Fatal("Other() mapping wrong")

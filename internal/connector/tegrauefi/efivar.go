@@ -122,24 +122,7 @@ func writeVar(path string, payload []byte) error {
 // osIndicationsProcessCapsule is bit 2 of the OsIndications UINT64:
 // "process capsule(s) on next boot". Validated on Thor: armed variable
 // reads 07 00 00 00 04 00 00 00 00 00 00 00 (4-byte attrs + UINT64).
-//
-// The SAME bit in the companion OsIndicationsSupported variable is the
-// firmware's capability signal: it means FILE_CAPSULE_DELIVERY (capsule-on-disk)
-// is supported. Both variables share the 4-byte-attrs + UINT64 layout, so
-// byte[4] carries bits 0..7.
 const osIndicationsProcessCapsule = 0x04
-
-// firmwareSupportsCapsuleOnDisk reports whether the firmware advertises
-// FILE_CAPSULE_DELIVERY in OsIndicationsSupported. Absent, unreadable, or a
-// short variable → not supported. Verified on-device: Orin Nano t234/r39.2
-// reads 06 00 00 00 45 ... (bit 2 set) and Thor t264/r38 likewise.
-func firmwareSupportsCapsuleOnDisk(path string) bool {
-	raw, err := os.ReadFile(path)
-	if err != nil || len(raw) < 5 {
-		return false
-	}
-	return raw[4]&osIndicationsProcessCapsule != 0
-}
 
 // clearOsIndicationsCapsuleBit disarms capsule processing (rollback
 // before reboot). Preserves other bits; a missing variable is a no-op.
