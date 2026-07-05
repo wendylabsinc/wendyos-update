@@ -8,9 +8,8 @@ import PlatformIO
 // plus `detect`; Task 8.3 adds `MarkGood`, below). `SwapSlot` lives in
 // `SwapSlot.swift` (ports `swap-slot.go`); `VerifyPlatformUpdate`/
 // `AbortPlatformUpdate` live in `Verify.swift` (ports `verify.go`, Task
-// 8.3). `Diagnostics`/`slotStatus`/`systemStatus` are stubbed below — Task
-// 8.4 replaces the stubs; they exist here only so `TegraUEFI` satisfies
-// `Connector`.
+// 8.3). `Diagnostics`/`slotStatus`/`systemStatus` live in
+// `Diagnostics.swift` (ports `diagnostics.go`, Task 8.4).
 //
 // Platform facts (see `tegrauefi.go`'s package doc, validated on t234/r36
 // and t264/r38): efivar names + GUID identical across generations; the
@@ -335,13 +334,6 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
             throw TegraUEFIError.markGoodClearBootAttemptedFailed("\(error)")
         }
     }
-
-    // MARK: - Stubs (Task 8.4)
-
-    // TODO(8.4): port board-specific diagnostics/status detail.
-    public func diagnostics(verbose: Bool) -> [String: String] { [:] }
-    public func slotStatus(_ s: Slot) -> SlotStatus { SlotStatus() }
-    public func systemStatus() -> [KV] { [] }
 
     // MARK: - Shared efivar path helpers
 
