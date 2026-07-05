@@ -142,5 +142,19 @@ let package = Package(
             dependencies: ["Artifact"],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .target(
+            name: "BlockDev",
+            dependencies: [
+                "PlatformIO", "LinuxSys", "CLIError",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "BlockDevTests",
+            dependencies: ["BlockDev", "PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
