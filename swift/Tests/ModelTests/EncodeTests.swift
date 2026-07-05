@@ -107,6 +107,42 @@ private let expectedPrettyManifest = """
     #expect(String(decoding: bytes, as: UTF8.self) == expected)
 }
 
+/// Pretty-printing an array-of-objects (`array → object → scalar`) is the
+/// deepest nesting `encodePretty`'s re-parse-before-walk workaround has to
+/// survive — and the exact shape upcoming status/state encoding
+/// (`slots[]`, `system[]`) will use. `InstalledHistory.history` is that
+/// shape, so drive it through `encodePretty` (not just `encodeCompact`)
+/// with two entries and check the full layout against a hand-typed
+/// expected string (2-space indent, Go field order, trailing newline —
+/// what `json.MarshalIndent(_, "", "  ")` + a written `\n` produces).
+@Test func encodePrettyHandlesArrayOfObjects() {
+    let history = InstalledHistory(history: [
+        InstalledEntry(artifactName: "a", artifactVersion: "1.0.0", committed: "t1", slot: 0),
+        InstalledEntry(artifactName: "b", artifactVersion: "2.0.0", committed: "t2", slot: 1),
+    ])
+    let expected = """
+        {
+          "history": [
+            {
+              "artifact_name": "a",
+              "artifact_version": "1.0.0",
+              "committed": "t1",
+              "slot": 0
+            },
+            {
+              "artifact_name": "b",
+              "artifact_version": "2.0.0",
+              "committed": "t2",
+              "slot": 1
+            }
+          ]
+        }
+
+        """
+    let bytes = JSONCodec.encodePretty(history.makeJSONObject())
+    #expect(String(decoding: bytes, as: UTF8.self) == expected)
+}
+
 @Test func encodeConfigOmitsAbsentFields() {
     let config = Config(connector: "manual", stateDir: "/data/wendyos-update")
     let expected = """
