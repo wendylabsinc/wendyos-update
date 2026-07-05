@@ -172,6 +172,16 @@ let package = Package(
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .target(
+            name: "TegraUEFI",
+            dependencies: ["Connector", "PlatformIO", "LinuxSys", "CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "TegraUEFITests",
+            dependencies: ["TegraUEFI"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
             name: "Engine",
             dependencies: [
                 "Connector", "Model", "PlatformIO", "CLIError", "Artifact", "BlockDev",
