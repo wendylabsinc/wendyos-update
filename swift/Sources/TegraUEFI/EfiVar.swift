@@ -111,15 +111,34 @@ public enum EfiVar {
         return raw[4] == 0 && raw[5] == 0 && raw[6] == 0 && raw[7] == 0
     }
 
+    /// The raw "clear the immutable inode flag on this path" operation
+    /// that `clearImmutable` wraps its tolerance logic around. Defaults to
+    /// `LinuxSys.setImmutable(path, false)`; injectable so the exact
+    /// tolerated-vs-fatal errno semantics can be unit-tested without a
+    /// filesystem that actually carries (or refuses) the immutable flag.
+    /// A conforming implementation throws `SysError` on failure, exactly
+    /// as `LinuxSys.setImmutable` does.
+    public typealias ImmutableClearer = @Sendable (_ path: String) throws -> Void
+
+    /// The production immutable-clear seam: clears the flag via the raw
+    /// `LinuxSys` ioctl.
+    public static let realClearer: ImmutableClearer = { path in
+        try LinuxSys.setImmutable(path, false)
+    }
+
     /// Removes the immutable inode flag (efivarfs sets it by default) via
-    /// `LinuxSys.setImmutable(path, false)`. Filesystems without flag
-    /// support (e.g. tmpfs in tests) fail with `ENOTTY`/`EOPNOTSUPP`/
-    /// `ENOSYS` — treated as "nothing to clear", matching `efivar.go`.
-    /// Any other failure (e.g. missing `CAP_LINUX_IMMUTABLE` for an
-    /// actual flag change) propagates as `EfiVarError.clearImmutable`.
-    public static func clearImmutable(_ path: String) throws {
+    /// `clearer` (defaulting to `LinuxSys.setImmutable(path, false)`).
+    /// Filesystems without flag support (e.g. tmpfs in tests) fail with
+    /// `ENOTTY`/`EOPNOTSUPP`/`ENOSYS` — treated as "nothing to clear",
+    /// matching `efivar.go`. Any other failure (e.g. `EPERM` from a
+    /// missing `CAP_LINUX_IMMUTABLE` for an actual flag change)
+    /// propagates as `EfiVarError.clearImmutable`.
+    public static func clearImmutable(
+        _ path: String,
+        using clearer: ImmutableClearer = realClearer
+    ) throws {
         do {
-            try LinuxSys.setImmutable(path, false)
+            try clearer(path)
         } catch let error as SysError {
             if unsupportedImmutableErrnos.contains(error.errno) {
                 return
@@ -129,16 +148,28 @@ public enum EfiVar {
     }
 
     /// Writes a complete efivar payload (attrs + data) in a single
-    /// `write(2)`, clearing the immutable flag first if the variable
-    /// already exists. Ports `efivar.go`'s `writeVar` exactly, except it
-    /// never creates the variable (`LinuxSys.openWriteExisting` — unlike
-    /// Go's `os.O_CREATE` — deliberately fails loudly on a missing path
-    /// rather than papering over it with a plain file; a missing
-    /// firmware-owned efivar is a configuration error, not something to
-    /// silently fix up).
-    public static func writeVar(_ path: String, _ payload: [UInt8]) throws {
+    /// `write(2)` (looping across short writes), clearing the immutable
+    /// flag first if the variable already exists. Ports `efivar.go`'s
+    /// `writeVar`, except it never creates the variable
+    /// (`LinuxSys.openWriteExisting` — unlike Go's `os.O_CREATE` —
+    /// deliberately fails loudly on a missing path rather than papering
+    /// over it with a plain file; a missing firmware-owned efivar is a
+    /// configuration error, not something to silently fix up).
+    ///
+    /// `clearer` is the injectable immutable-clear seam (see
+    /// `clearImmutable`). The write loops until the whole payload is
+    /// drained — `LinuxSys.write` is a single-`write(2)` shim that may
+    /// report a short count, so a one-shot `write` is unsafe for anything
+    /// larger than the current 8-byte status payload. The 12-byte
+    /// OsIndications payloads (Tasks 8.2/8.3) build on this, so the loop
+    /// must be here, not in each caller.
+    public static func writeVar(
+        _ path: String,
+        _ payload: [UInt8],
+        clearImmutable clearer: ImmutableClearer = realClearer
+    ) throws {
         if pathExists(path) {
-            try clearImmutable(path)
+            try clearImmutable(path, using: clearer)
         }
 
         let fd: Int32
@@ -150,8 +181,22 @@ public enum EfiVar {
 
         do {
             try payload.withUnsafeBytes { buf in
-                _ = try LinuxSys.write(fd, buf)
+                var offset = 0
+                while offset < buf.count {
+                    let n = try LinuxSys.write(fd, UnsafeRawBufferPointer(rebasing: buf[offset...]))
+                    // A regular file / efivarfs variable never reports a
+                    // 0-byte write for a non-empty buffer; treat it as a
+                    // failure to complete rather than spinning forever.
+                    guard n > 0 else {
+                        throw EfiVarError.write(
+                            "write \(path): incomplete (\(offset)/\(buf.count) bytes)")
+                    }
+                    offset += n
+                }
             }
+        } catch let error as EfiVarError {
+            LinuxSys.close(fd)
+            throw error
         } catch {
             LinuxSys.close(fd)
             throw EfiVarError.write("write \(path): \(error)")
@@ -160,10 +205,14 @@ public enum EfiVar {
     }
 
     /// Writes the 8-byte normal payload in a single `write(2)`, matching
-    /// the validated `dd` pattern, then verifies the read-back.
-    public static func writeStatusNormal(_ path: String) throws {
+    /// the validated `dd` pattern, then verifies the read-back. `clearer`
+    /// is the injectable immutable-clear seam (see `clearImmutable`).
+    public static func writeStatusNormal(
+        _ path: String,
+        clearImmutable clearer: ImmutableClearer = realClearer
+    ) throws {
         do {
-            try writeVar(path, statusNormal)
+            try writeVar(path, statusNormal, clearImmutable: clearer)
         } catch {
             throw EfiVarError.write("status var: \(error)")
         }

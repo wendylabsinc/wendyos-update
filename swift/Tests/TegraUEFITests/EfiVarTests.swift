@@ -1,4 +1,5 @@
 import Glibc
+import LinuxSys
 import Testing
 
 @testable import TegraUEFI
@@ -108,5 +109,70 @@ private func readWholeFileRaw(_ path: String) -> [UInt8] {
         try EfiVar.clearImmutable(path)
     } catch is EfiVarError {
         // Acceptable: filesystem/capability doesn't support it here.
+    }
+}
+
+// MARK: - Immutable-clear tolerance (injectable seam, no filesystem)
+
+/// The exact set of errnos `efivar.go`'s `clearImmutable` tolerates as
+/// "this filesystem doesn't carry the immutable flag — nothing to clear".
+private let toleratedClearErrnos: [Int32] = [ENOTTY, EOPNOTSUPP, ENOSYS]
+
+@Test(arguments: toleratedClearErrnos)
+func clearImmutableSwallowsUnsupportedFilesystemErrno(_ errno: Int32) throws {
+    // A fake clearer standing in for LinuxSys.setImmutable on a filesystem
+    // that has no immutable-flag support: the SysError must be treated as
+    // a no-op, NOT propagated. This pins the tolerance that the real
+    // temp-file test cannot exercise deterministically.
+    let clearer: EfiVar.ImmutableClearer = { _ in
+        throw SysError(errno: errno, op: "ioctl(FS_IOC_SETFLAGS)")
+    }
+    // Does not throw:
+    try EfiVar.clearImmutable("/does/not/matter", using: clearer)
+}
+
+@Test func clearImmutablePropagatesAFatalErrno() {
+    // EPERM (missing CAP_LINUX_IMMUTABLE for a real flag change) is NOT in
+    // the tolerated set — it must surface as EfiVarError.clearImmutable,
+    // never be swallowed. A regression that widened the tolerance to
+    // "any SysError" would fail here.
+    let clearer: EfiVar.ImmutableClearer = { _ in
+        throw SysError(errno: EPERM, op: "ioctl(FS_IOC_SETFLAGS)")
+    }
+    #expect(throws: EfiVarError.self) {
+        try EfiVar.clearImmutable("/does/not/matter", using: clearer)
+    }
+}
+
+@Test func writeStatusNormalTreatsUnsupportedImmutableClearAsNoOp() throws {
+    // The immutable-clear step failing with an unsupported-filesystem
+    // errno must not abort the write: writeStatusNormal proceeds to write
+    // the reset payload and its read-back succeeds.
+    let path = tempPath("write-tolerant-clear")
+    createFixtureFile(path, contents: [0x07, 0, 0, 0, 0xFF, 0, 0, 0])
+    defer { unlink(path) }
+
+    let clearer: EfiVar.ImmutableClearer = { _ in
+        throw SysError(errno: ENOTTY, op: "ioctl(FS_IOC_SETFLAGS)")
+    }
+    try EfiVar.writeStatusNormal(path, clearImmutable: clearer)
+
+    let onDisk = readWholeFileRaw(path)
+    #expect(onDisk == [0x07, 0, 0, 0, 0, 0, 0, 0])
+}
+
+@Test func writeStatusNormalPropagatesAFatalImmutableClearError() {
+    // A fatal (non-tolerated) immutable-clear error must abort the write
+    // and surface — the reset payload is never written blindly over a
+    // still-immutable variable.
+    let path = tempPath("write-fatal-clear")
+    createFixtureFile(path, contents: [0x07, 0, 0, 0, 0xFF, 0, 0, 0])
+    defer { unlink(path) }
+
+    let clearer: EfiVar.ImmutableClearer = { _ in
+        throw SysError(errno: EPERM, op: "ioctl(FS_IOC_SETFLAGS)")
+    }
+    #expect(throws: EfiVarError.self) {
+        try EfiVar.writeStatusNormal(path, clearImmutable: clearer)
     }
 }
