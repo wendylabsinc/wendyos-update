@@ -49,7 +49,8 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 		if err := c.recordBootAttempt(s); err != nil {
 			return err
 		}
-		out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "set-active-boot-slot", fmt.Sprintf("%d", int(s)))
+		args := append(c.nvbootctrlSlotArgs(), "set-active-boot-slot", fmt.Sprintf("%d", int(s)))
+		out, err := runCmd(c.Nvbootctrl, args...)
 		if err != nil {
 			return fmt.Errorf("swap to slot %s: nvbootctrl set-active-boot-slot: %w (%s)", s, err, out)
 		}
@@ -75,11 +76,13 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	hasMarker := markerErr == nil
 
 	// The capsule path (below) delegates the ENTIRE slot switch to UEFI
-	// processing the capsule at reboot — no nvbootctrl call. It is taken only
-	// when the firmware advertises capsule-on-disk support (capsuleUpdateEffective).
-	// When it does not, fall back to the reliable nvbootctrl slot switch: the new
-	// rootfs boots on the existing bootloader (validated by manual
-	// set-active-boot-slot), only the bootloader is left un-updated.
+	// processing the capsule at reboot — no nvbootctrl call. That only works
+	// where capsule-on-disk is actually honored (Thor). On Orin and unknown
+	// SoCs the firmware silently ignores a correctly-staged capsule, so the
+	// slot never moves and the update no-ops (reboots into the same OS). Fall
+	// back to the reliable nvbootctrl slot switch there: the new rootfs boots
+	// on the existing bootloader (validated by manual set-active-boot-slot),
+	// only the bootloader is left un-updated. See capsuleUpdateEffective.
 	if !hasMarker || !c.capsuleUpdateEffective() {
 		if hasMarker {
 			slog.Warn("swap: image requests a bootloader update but UEFI capsule-on-disk is not effective on this platform; applying rootfs-only slot switch — the bootloader will NOT be updated",
@@ -90,7 +93,8 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 		if err := c.recordBootAttempt(s); err != nil {
 			return err
 		}
-		out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "set-active-boot-slot", fmt.Sprintf("%d", int(s)))
+		args := append(c.nvbootctrlSlotArgs(), "set-active-boot-slot", fmt.Sprintf("%d", int(s)))
+		out, err := runCmd(c.Nvbootctrl, args...)
 		if err != nil {
 			return fmt.Errorf("swap to slot %s: nvbootctrl set-active-boot-slot: %w (%s)", s, err, out)
 		}
@@ -137,28 +141,83 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	return nil
 }
 
+// capsuleEffectiveSoC is the device-tree compatible token for the only
+// platform where UEFI capsule-on-disk bootloader updates are validated to be
+// processed by the firmware: NVIDIA Jetson AGX Thor (t264).
+const capsuleEffectiveSoC = "tegra264"
+
 // capsuleUpdateEffective reports whether staging a UEFI capsule-on-disk update
-// (capsule on the ESP + OsIndications bit, no nvbootctrl call) will be honored
-// by this platform's firmware. It trusts the firmware's own capability signal:
-// OsIndicationsSupported advertising FILE_CAPSULE_DELIVERY (bit 2).
+// (capsule on the ESP + OsIndications bit, no nvbootctrl call) will actually
+// be honored by this platform's firmware.
 //
-// Orin (t234/r39.2) verified on-device 2026-07-05: a staged capsule is
-// processed (OsIndications bit cleared, boot chain flipped, capsule consumed).
-// Thor (t264/r38) honors capsule-on-disk (Phase 1 validation), which per the
-// UEFI spec entails advertising the bit. The earlier tegra264-only allowlist was a
-// misdiagnosis: the "Orin ignores the capsule" symptom was actually an unarmed
-// rootfs-A/B redundancy no-op (the boot chain flipped but the rootfs slot could
-// not follow), since fixed by PreflightInstall refusing an install unless
-// RootfsRedundancyLevel is armed. So an Orin reaches this path only when armed —
-// exactly the condition under which the capsule works.
-//
-// We do NOT special-case per-SoC allowlists or manual overrides. A firmware that
-// advertises but does not honor the capsule fails SAFE: the boot chain never
-// switches, so Commit sees running slot != target and rolls back — no brick, no
-// skew. A genuinely lying firmware is a BSP defect, not something the update
-// engine should paper over.
+// This is an allowlist, not a capability probe, and deliberately so: the UEFI
+// OsIndicationsSupported variable advertises FILE_CAPSULE_DELIVERY on Orin
+// (tegra234) too, yet the firmware never processes a correctly-staged capsule
+// there — observed fleet-wide on AGX Orin and Orin Nano (r39.2): ESRT stays 0,
+// the boot chain never switches, and the whole update silently no-ops. Only
+// Thor (tegra264) is validated to process the capsule. Everything else — Orin
+// and any unknown or unreadable SoC — is treated as ineffective so SwapSlot
+// falls back to the reliable nvbootctrl slot switch, trading the bootloader
+// update for an update that actually applies.
 func (c *Controller) capsuleUpdateEffective() bool {
-	return firmwareSupportsCapsuleOnDisk(filepath.Join(c.EfivarsDir, "OsIndicationsSupported-"+EfiGlobalGUID))
+	return c.socCompatibleContains(capsuleEffectiveSoC)
+}
+
+// bootChainSlotABSoC is the device-tree compatible token for Orin (t234), the
+// platform that drives A/B by switching the BOOT CHAIN rather than the
+// rootfs-redundancy slot. See bootChainSlotAB.
+const bootChainSlotABSoC = "tegra234"
+
+// bootChainSlotAB reports whether this SoC does OS-driven rootfs A/B by
+// switching the BOOT CHAIN (nvbootctrl WITHOUT `-t rootfs`) instead of the
+// rootfs-redundancy slot (nvbootctrl `-t rootfs`).
+//
+// NVIDIA couples the two layers — boot chain N <-> rootfs slot N — but the
+// rootfs-redundancy layer is gated by the RootfsRedundancyLevel UEFI variable,
+// which is UNARMABLE from the OS on Orin (t234): it is a flash-time device-tree
+// setting, and every efivarfs write returns EINVAL. With it unarmed,
+// `nvbootctrl -t rootfs set-active-boot-slot` is a silent no-op and every OTA
+// rolls back. The boot-chain layer needs no such variable: a capsule-on-disk
+// update on Orin (which switches the chain and makes NO nvbootctrl call) was
+// observed to flip the coupled rootfs slot, proving the chain switch moves the
+// rootfs. So on Orin we drive the chain directly with nvbootctrl and skip the
+// redundancy machinery entirely.
+//
+// Only Orin (tegra234) opts in. Thor (tegra264) keeps the rootfs-redundancy
+// path (redundancy is armed at flash there and its flow is hardware-validated),
+// and an unknown/unreadable SoC keeps that conservative default too.
+func (c *Controller) bootChainSlotAB() bool {
+	return c.socCompatibleContains(bootChainSlotABSoC)
+}
+
+// nvbootctrlSlotArgs returns the nvbootctrl target-type selector for slot
+// operations (get-current-slot / set-active-boot-slot / mark-boot-successful):
+// none for the boot-chain layer (Orin), "-t rootfs" for the rootfs-redundancy
+// layer (Thor and the conservative default). Returns a fresh slice each call so
+// callers can append safely.
+func (c *Controller) nvbootctrlSlotArgs() []string {
+	if c.bootChainSlotAB() {
+		return nil
+	}
+	return []string{"-t", "rootfs"}
+}
+
+// socCompatibleContains reports whether the device-tree "compatible" property
+// contains token (e.g. "tegra234", "tegra264"). compatible is a NUL-separated
+// list of "vendor,soc" strings. Returns false (with a warning) when it cannot
+// be read, so callers treat an unknown SoC conservatively.
+func (c *Controller) socCompatibleContains(token string) bool {
+	raw, err := os.ReadFile(c.RootDir + "/proc/device-tree/compatible")
+	if err != nil {
+		slog.Warn("SoC gate: cannot read device-tree compatible; treating SoC as unknown", "token", token, "err", err)
+		return false
+	}
+	for _, tok := range strings.Split(string(raw), "\x00") {
+		if strings.Contains(tok, token) {
+			return true
+		}
+	}
+	return false
 }
 
 // recordBootAttempt notes which slot the next boot targets — input for

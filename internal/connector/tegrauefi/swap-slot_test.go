@@ -9,49 +9,44 @@ import (
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
-// osIndicationsSupportedVar is the efivarfs filename for the firmware's
-// capsule-on-disk capability signal.
-const osIndicationsSupportedVar = "OsIndicationsSupported-" + EfiGlobalGUID
-
-// writeOsIndicationsSupported fakes the OsIndicationsSupported UEFI variable
-// under the controller's EfivarsDir. capsuleBit controls FILE_CAPSULE_DELIVERY
-// (bit 2). Layout matches the device: 4-byte attrs (0x06 = BS+RT) + UINT64, so
-// byte[4] carries bits 0..7. When set, byte[4] = 0x45 mirrors the real Orin Nano
-// r39.2 value (bits 0, 2, 6), which also exercises masking bit 2 out of others.
-func writeOsIndicationsSupported(t *testing.T, c *Controller, capsuleBit bool) {
+// writeCompatible fakes /proc/device-tree/compatible under the controller's
+// RootDir with the given NUL-separated SoC compatible strings (the real file
+// is a NUL-separated, NUL-terminated list, e.g. "nvidia,p3701-0000\0nvidia,tegra234\0").
+func writeCompatible(t *testing.T, c *Controller, entries ...string) {
 	t.Helper()
-	payload := []byte{0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}
-	if capsuleBit {
-		payload[4] = 0x45
+	dir := filepath.Join(c.RootDir, "proc", "device-tree")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(c.EfivarsDir, osIndicationsSupportedVar), payload, 0o644); err != nil {
+	body := strings.Join(entries, "\x00") + "\x00"
+	if err := os.WriteFile(filepath.Join(dir, "compatible"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// capsuleUpdateEffective gates the bootloader-capsule path on the firmware's own
-// capability signal: OsIndicationsSupported advertising FILE_CAPSULE_DELIVERY
-// (bit 2). Verified on Thor (t264/r38) and Orin (t234/r39.2 — reads 0x45). When
-// unsupported/absent, the connector falls back to the nvbootctrl slot switch.
+// capsuleUpdateEffective gates the bootloader-capsule path: UEFI
+// capsule-on-disk is only honored on platforms where it has been validated
+// (Thor / tegra264). On Orin (tegra234) and unknown SoCs the firmware silently
+// ignores a staged capsule, so the connector must fall back to the reliable
+// nvbootctrl slot switch instead of betting the whole update on a capsule that
+// never gets processed.
 func TestCapsuleUpdateEffective(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		raw  []byte // nil = variable absent
-		want bool
+		name     string
+		entries  []string
+		writeVar bool
+		want     bool
 	}{
-		{"capsule bit set (0x45, as on Orin r39.2)", []byte{0x06, 0, 0, 0, 0x45, 0, 0, 0, 0, 0, 0, 0}, true},
-		{"capsule bit only (0x04)", []byte{0x06, 0, 0, 0, 0x04, 0, 0, 0, 0, 0, 0, 0}, true},
-		{"other bits but not capsule (0x41)", []byte{0x06, 0, 0, 0, 0x41, 0, 0, 0, 0, 0, 0, 0}, false},
-		{"no bits set", []byte{0x06, 0, 0, 0, 0x00, 0, 0, 0, 0, 0, 0, 0}, false},
-		{"short/malformed (<5 bytes)", []byte{0x06, 0, 0, 0}, false},
-		{"variable absent", nil, false},
+		{"thor tegra264 is effective", []string{"nvidia,p3834-0008", "nvidia,tegra264"}, true, true},
+		{"orin tegra234 is not effective", []string{"nvidia,p3701-0000", "nvidia,tegra234"}, true, false},
+		{"orin nano tegra234 is not effective", []string{"nvidia,p3767-0000", "nvidia,tegra234"}, true, false},
+		{"missing compatible defaults to not effective", nil, false, false},
+		{"unknown soc defaults to not effective", []string{"nvidia,someboard", "nvidia,tegra999"}, true, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testController(t)
-			if tc.raw != nil {
-				if err := os.WriteFile(filepath.Join(c.EfivarsDir, osIndicationsSupportedVar), tc.raw, 0o644); err != nil {
-					t.Fatal(err)
-				}
+			if tc.writeVar {
+				writeCompatible(t, c, tc.entries...)
 			}
 			if got := c.capsuleUpdateEffective(); got != tc.want {
 				t.Fatalf("capsuleUpdateEffective() = %v, want %v", got, tc.want)
@@ -96,16 +91,16 @@ func installSwapSetup(t *testing.T, c *Controller, target connector.Slot, hasMar
 	c.mountFn = func(string) (string, func(), error) { return mountDir, func() {}, nil }
 }
 
-// On a platform whose firmware does NOT advertise capsule-on-disk, an install
-// swap for an image that carries the bootloader marker must still switch the
-// active slot via nvbootctrl — otherwise the update silently no-ops (the slot
-// never moves, the device reboots into the same OS). It must NOT stage a capsule
-// or arm OsIndications on this platform.
+// On a platform where capsule-on-disk is NOT effective (Orin), an install swap
+// for an image that carries the bootloader marker must still switch the active
+// slot via nvbootctrl — otherwise the update silently no-ops (the slot never
+// moves, the device reboots into the same OS). It must NOT stage a capsule or
+// arm OsIndications on this platform.
 func TestSwapSlotSwitchesSlotWhenCapsuleIneffective(t *testing.T) {
 	c := testController(t)
 	logPath := filepath.Join(t.TempDir(), "calls.log")
 	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n") // running slot A
-	writeOsIndicationsSupported(t, c, false /* capsule not advertised */)
+	writeCompatible(t, c, "nvidia,p3701-0000", "nvidia,tegra234")
 	installSwapSetup(t, c, connector.SlotB, true /* marker present */)
 
 	if err := c.SwapSlot(connector.SlotB, true); err != nil {
@@ -123,7 +118,7 @@ func TestSwapSlotSwitchesSlotWhenCapsuleIneffective(t *testing.T) {
 	}
 }
 
-// On a platform whose firmware advertises capsule-on-disk, an install swap for
+// On a platform where capsule-on-disk IS effective (Thor), an install swap for
 // a bootloader-carrying image must take the capsule path — it must NOT fall
 // back to the nvbootctrl slot switch (doing both is the documented BC_NEXT
 // conflict). Staging needs a real ESP, so here we only assert the routing:
@@ -132,7 +127,7 @@ func TestSwapSlotDoesNotSwitchSlotWhenCapsuleEffective(t *testing.T) {
 	c := testController(t)
 	logPath := filepath.Join(t.TempDir(), "calls.log")
 	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n")
-	writeOsIndicationsSupported(t, c, true /* capsule advertised */)
+	writeCompatible(t, c, "nvidia,p3834-0008", "nvidia,tegra264")
 	installSwapSetup(t, c, connector.SlotB, true /* marker present */)
 
 	// Staging cannot complete without a real ESP; that's fine — we only care

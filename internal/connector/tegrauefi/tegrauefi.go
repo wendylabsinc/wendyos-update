@@ -97,10 +97,13 @@ var _ connector.Connector = (*Controller)(nil)
 
 func (c *Controller) Name() string { return "tegrauefi" }
 
-// CurrentSlot runs `nvbootctrl -t rootfs get-current-slot`.
+// CurrentSlot runs `nvbootctrl [-t rootfs] get-current-slot` — the boot-chain
+// slot on Orin (bootChainSlotAB), the rootfs-redundancy slot elsewhere. The two
+// are coupled, so the running rootfs slot is the same either way.
 // Output validated on r36 and r38: a single digit, 0 or 1.
 func (c *Controller) CurrentSlot() (connector.Slot, error) {
-	out, err := exec.Command(c.Nvbootctrl, "-t", "rootfs", "get-current-slot").Output()
+	args := append(c.nvbootctrlSlotArgs(), "get-current-slot")
+	out, err := exec.Command(c.Nvbootctrl, args...).Output()
 	if err != nil {
 		return 0, fmt.Errorf("nvbootctrl get-current-slot: %w", err)
 	}
@@ -311,7 +314,8 @@ func (c *Controller) MarkGood() error {
 // confirms; stock L4T's nv_update_verifier.service did this, and WendyOS
 // does not ship it — so the boot verifier calls this each healthy boot.
 func (c *Controller) ConfirmBoot() error {
-	if out, err := runCmd(c.Nvbootctrl, "-t", "rootfs", "mark-boot-successful"); err != nil {
+	args := append(c.nvbootctrlSlotArgs(), "mark-boot-successful")
+	if out, err := runCmd(c.Nvbootctrl, args...); err != nil {
 		return fmt.Errorf("confirm boot: nvbootctrl mark-boot-successful: %w (%s)", err, out)
 	}
 	return nil
@@ -353,6 +357,14 @@ func (c *Controller) rootfsRedundancyArmed() (bool, error) {
 // actionable message instead of downloading, writing, rebooting, then rolling
 // back.
 func (c *Controller) PreflightInstall() error {
+	// Boot-chain A/B (Orin) does not use RootfsRedundancyLevel at all — the
+	// chain switch moves the coupled rootfs slot without it — so there is
+	// nothing to arm and nothing to preflight. (The var is unarmable from the
+	// OS on Orin anyway; blocking on it is exactly what this replaces.)
+	if c.bootChainSlotAB() {
+		return nil
+	}
+
 	armed, err := c.rootfsRedundancyArmed()
 	if err != nil {
 		// Probe failed unexpectedly: don't block the update on a read error —
