@@ -109,5 +109,19 @@ let package = Package(
             resources: [.copy("Fixtures")],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
+        .target(
+            name: "CLIError",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "Artifact",
+            dependencies: ["Model", "CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "ArtifactTests",
+            dependencies: ["Artifact"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
     ]
 )
