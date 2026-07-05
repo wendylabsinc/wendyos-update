@@ -12,10 +12,20 @@ public enum TegraUEFIError: Error, Equatable, ExitCoded {
     /// `nvbootctrl -t rootfs get-current-slot` printed something other
     /// than `0`/`1`.
     case currentSlotUnexpectedOutput(String)
-    /// None of the three partition-resolution tiers
-    /// (by-partlabel symlink, `lsblk` scan, `nv_boot_control.conf`
-    /// PARTUUID) resolved a block device for the slot.
-    case partitionNotResolved(Slot)
+    /// Tiers 1-3 (by-partlabel symlink, `lsblk` scan,
+    /// `nv_boot_control.conf` PARTUUID) all failed AND the tier-4
+    /// arithmetic fallback couldn't even determine the current slot.
+    case partitionCurrentSlotUnknown(Slot, String)
+    /// Tiers 1-3 all failed and the tier-4 fallback couldn't determine
+    /// the current root block device (`findmnt / SOURCE`).
+    case partitionRootDeviceUnknown(Slot, String)
+    /// Tier-4 fallback: the current root device isn't a recognized
+    /// `<base>p<n>` partition device, so its partition number can't be
+    /// toggled.
+    case partitionUnrecognizedDevice(Slot, String)
+    /// Tier-4 fallback: the arithmetically-derived candidate partition
+    /// for the slot doesn't exist on disk.
+    case partitionCandidateMissing(Slot, String)
     /// Reading/writing/verifying the slot's `RootfsStatusSlot*` efivar
     /// failed while preparing it as a swap target.
     case prepareTargetFailed(Slot, String)
@@ -68,8 +78,14 @@ extension TegraUEFIError: CustomStringConvertible {
             return "nvbootctrl get-current-slot: \(detail)"
         case .currentSlotUnexpectedOutput(let out):
             return "nvbootctrl get-current-slot: unexpected output \"\(out)\""
-        case .partitionNotResolved(let slot):
-            return "partition for slot \(slot): all lookups failed (no by-partlabel symlink, no lsblk match, no PARTUUID entry)"
+        case .partitionCurrentSlotUnknown(let slot, let detail):
+            return "partition for slot \(slot): all lookups failed and current slot unknown: \(detail)"
+        case .partitionRootDeviceUnknown(let slot, let detail):
+            return "partition for slot \(slot): all lookups failed: \(detail)"
+        case .partitionUnrecognizedDevice(let slot, let dev):
+            return "partition for slot \(slot): unrecognized partition device \"\(dev)\""
+        case .partitionCandidateMissing(let slot, let cand):
+            return "partition for slot \(slot): candidate \(cand) does not exist"
         case .prepareTargetFailed(let slot, let detail):
             return "prepare slot \(slot): \(detail)"
         case .bootHealthCheckFailed(let slot, let detail):

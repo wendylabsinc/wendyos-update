@@ -103,10 +103,9 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
     /// Resolves the slot's rootfs block device: (1) `by-partlabel`
     /// symlink, (2) `lsblk -rno PATH,PARTLABEL` scan, (3)
     /// `ROOTFS_PARTUUID_{A,B}` from `nv_boot_control.conf` ->
-    /// `by-partuuid` symlink. Ports the first three tiers of
-    /// `tegrauefi.go`'s `PartitionFor` (the fourth, arithmetic-on-
-    /// current-root-device fallback, is out of scope for this task per
-    /// the task brief).
+    /// `by-partuuid` symlink, (4) arithmetic toggle of the CURRENT root
+    /// device's partition number (slots are consecutive: A=pN, B=pN+1).
+    /// Full port of `tegrauefi.go`'s `PartitionFor`, all four tiers.
     public func partition(for s: Slot) throws -> String {
         let label = Self.partlabel(for: s)
 
@@ -143,7 +142,68 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
             }
         }
 
-        throw TegraUEFIError.partitionNotResolved(s)
+        // 4) toggle the partition number of the current root device.
+        let cur: Slot
+        do {
+            cur = try currentSlot()
+        } catch {
+            throw TegraUEFIError.partitionCurrentSlotUnknown(s, "\(error)")
+        }
+        let rootDev: String
+        do {
+            rootDev = try currentRootDevice()
+        } catch {
+            throw TegraUEFIError.partitionRootDeviceUnknown(s, "\(error)")
+        }
+        if s == cur {
+            return rootDev
+        }
+        guard let (base, num) = Self.splitPartDev(rootDev) else {
+            throw TegraUEFIError.partitionUnrecognizedDevice(s, rootDev)
+        }
+        let target = num + s.rawValue - cur.rawValue
+        let candidate = "\(base)p\(target)"
+        guard fileStore.exists(rootDir + candidate) else {
+            throw TegraUEFIError.partitionCandidateMissing(s, candidate)
+        }
+        return candidate
+    }
+
+    /// A plain "findmnt /: ..." failure. Kept lightweight (its
+    /// interpolation is the raw Go `currentRootDevice` message) so the
+    /// tier-4 caller can wrap it once into
+    /// `partitionRootDeviceUnknown` — matching Go's `all lookups failed:
+    /// %w` without nesting a second "partition for slot X:" prefix.
+    struct FindmntError: Error, CustomStringConvertible {
+        let detail: String
+        var description: String { detail }
+    }
+
+    /// Returns the block device mounted at `/` via `findmnt -no SOURCE
+    /// /`. Ports `tegrauefi.go`'s `currentRootDevice`.
+    func currentRootDevice() throws -> String {
+        let result = commandRunner.run(["findmnt", "-no", "SOURCE", "/"])
+        guard result.exitCode == 0 else {
+            throw FindmntError(detail: "findmnt /: exit \(result.exitCode)")
+        }
+        let dev = Self.trimmed(String(decoding: result.stdout, as: UTF8.self))
+        guard !dev.isEmpty else {
+            throw FindmntError(detail: "findmnt /: empty source")
+        }
+        return dev
+    }
+
+    /// Splits `/dev/nvme0n1p2` -> (`/dev/nvme0n1`, 2) and
+    /// `/dev/mmcblk0p1` -> (`/dev/mmcblk0`, 1) by the LAST `p`. Returns
+    /// `nil` for a device with no `p` separator, a trailing `p`, or a
+    /// non-numeric partition suffix. Ports `tegrauefi.go`'s
+    /// `splitPartDev`.
+    static func splitPartDev(_ dev: String) -> (base: String, num: Int)? {
+        guard let pIdx = dev.lastIndex(of: "p") else { return nil }
+        let numStart = dev.index(after: pIdx)
+        guard numStart < dev.endIndex else { return nil }  // trailing 'p'
+        guard let num = Int(dev[numStart...]) else { return nil }
+        return (String(dev[dev.startIndex..<pIdx]), num)
     }
 
     // MARK: - PrepareTarget

@@ -145,6 +145,9 @@ func currentSlotParsesTrailingDigitOrThrows(_ tc: CurrentSlotCase) throws {
 }
 
 @Test func partitionForThrowsWhenAllTiersFail() {
+    // With no symlinks/lsblk-match/conf, and a command runner that
+    // returns empty output for get-current-slot, all four tiers fail —
+    // tier 4 can't even determine the current slot.
     let (conn, _, _, _) = makeConnector()
     #expect(throws: TegraUEFIError.self) { try conn.partition(for: .a) }
 }
@@ -160,6 +163,81 @@ func currentSlotParsesTrailingDigitOrThrows(_ tc: CurrentSlotCase) throws {
     )
 
     #expect(try conn.partition(for: .a) == "/dev/tier1")
+}
+
+/// Tier 4: when tiers 1-3 all fail, toggle the current root device's
+/// partition number. Ports `tegrauefi.go:170-191` — running slot A on
+/// `/dev/nvme0n1p2` means slot B is `/dev/nvme0n1p3` (num + 1 - 0), and
+/// the running slot itself resolves straight to the root device.
+@Test func partitionForFallsBackToPartitionNumberToggle() throws {
+    let (conn, cmd, files, _) = makeConnector()
+    cmd.script(containing: "get-current-slot", stdout: "0\n")  // running slot A
+    cmd.script(when: { $0.first == "findmnt" }, result: CommandResult(exitCode: 0, stdout: Array("/dev/nvme0n1p2\n".utf8), stderr: []))
+    // The derived candidate for the OTHER slot must exist on disk.
+    try files.writeAtomic("/rootdir/dev/nvme0n1p3", [], mode: 0o644)
+
+    // OTHER slot: arithmetic toggle p2 -> p3.
+    #expect(try conn.partition(for: .b) == "/dev/nvme0n1p3")
+    // SAME slot: resolves directly to the running root device.
+    #expect(try conn.partition(for: .a) == "/dev/nvme0n1p2")
+}
+
+/// Tier 4 error path: tiers 1-3 fail and the current slot can't be
+/// determined (garbage `get-current-slot`) — the "all lookups failed and
+/// current slot unknown" branch.
+@Test func partitionForTier4FailsWhenCurrentSlotUnknown() throws {
+    let (conn, cmd, _, _) = makeConnector()
+    cmd.script(containing: "get-current-slot", stdout: "garbage")
+
+    #expect(throws: TegraUEFIError.self) { try conn.partition(for: .b) }
+    do {
+        _ = try conn.partition(for: .b)
+    } catch let error as TegraUEFIError {
+        #expect("\(error)".contains("current slot unknown"))
+    }
+}
+
+/// Tier 4 error path: current slot + root device resolve, but the
+/// arithmetically-derived candidate partition doesn't exist on disk.
+@Test func partitionForTier4FailsWhenCandidateMissing() throws {
+    let (conn, cmd, _, _) = makeConnector()
+    cmd.script(containing: "get-current-slot", stdout: "0\n")
+    cmd.script(when: { $0.first == "findmnt" }, result: CommandResult(exitCode: 0, stdout: Array("/dev/nvme0n1p2\n".utf8), stderr: []))
+    // Note: /rootdir/dev/nvme0n1p3 is deliberately NOT created.
+
+    #expect(throws: TegraUEFIError.self) { try conn.partition(for: .b) }
+    do {
+        _ = try conn.partition(for: .b)
+    } catch let error as TegraUEFIError {
+        #expect("\(error)".contains("candidate /dev/nvme0n1p3 does not exist"))
+    }
+}
+
+// MARK: - splitPartDev (ports TestSplitPartDev)
+
+struct SplitPartDevCase: Sendable {
+    let dev: String
+    let base: String?
+    let num: Int?
+}
+
+private let splitPartDevCases: [SplitPartDevCase] = [
+    .init(dev: "/dev/nvme0n1p2", base: "/dev/nvme0n1", num: 2),
+    .init(dev: "/dev/mmcblk0p1", base: "/dev/mmcblk0", num: 1),
+    .init(dev: "/dev/nvme0n1p17", base: "/dev/nvme0n1", num: 17),
+    .init(dev: "/dev/sda2", base: nil, num: nil),  // no 'p' separator scheme
+    .init(dev: "/dev/nvme0n1p", base: nil, num: nil),  // trailing 'p'
+]
+
+@Test(arguments: splitPartDevCases)
+func splitPartDevSplitsOrRejects(_ tc: SplitPartDevCase) {
+    let result = TegraUEFI.splitPartDev(tc.dev)
+    if let base = tc.base, let num = tc.num {
+        #expect(result?.base == base)
+        #expect(result?.num == num)
+    } else {
+        #expect(result == nil)
+    }
 }
 
 // MARK: - PrepareTarget (ports TestPrepareTarget*)
