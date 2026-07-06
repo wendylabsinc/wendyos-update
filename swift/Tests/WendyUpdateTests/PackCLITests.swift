@@ -220,6 +220,34 @@ struct PackCLITests {
         #expect(!fileExists(outputPath))
     }
 
+    // MARK: - cleanup on pack failure
+
+    /// Drives `packArtifact`'s remove-on-catch branch end to end. The
+    /// required-flag and invalid-`--compression` rejections all fire BEFORE
+    /// any file I/O, so they never open `-o` and thus never exercise the
+    /// cleanup. Here `-o` IS opened by `openWriteCreateTruncate` and then
+    /// `ArtifactWriter.pack` fails reading a nonexistent `--image`, so the
+    /// partial output must be removed before `runPack` rethrows.
+    ///
+    /// The sibling cleanup path -- verify-failure-through-`runPack` removing
+    /// the output -- is covered only indirectly: `verifyPackedDetectsA-
+    /// CorruptedPayload` proves the detection is real, but triggering it
+    /// organically through `runPack` would require corrupting the artifact
+    /// in the window between pack and read-back, which nothing in the
+    /// pipeline does. An accepted, documented gap rather than a silent one.
+    @Test func packFailureRemovesThePartialOutput() throws {
+        let missingImage = "/tmp/pack-cli-test-\(getpid())-does-not-exist-\(Int.random(in: 0..<1_000_000)).img"
+        #expect(!fileExists(missingImage))
+        let outputPath = freshOutputPath(tag: "cleanup")
+        defer { unlink(outputPath) } // in case the assertion below fails
+
+        let opts = baseOptions(image: missingImage, output: outputPath)
+        #expect(throws: PackError.self) { _ = try runPack(opts) }
+        // The output was created (openWriteCreateTruncate) then the pack
+        // failed -- packArtifact's catch must have removed it.
+        #expect(!fileExists(outputPath))
+    }
+
     // MARK: - --no-verify
 
     @Test func noVerifySkipsTheReadBackButStillProducesAValidFile() throws {
