@@ -1,12 +1,12 @@
 import ArgumentParser
 import Artifact
+import AsyncHTTPClient
 import BlockDev
 import CLIError
 import Connector
 import Engine
 import Foundation
 import Logging
-import LinuxSys
 import Model
 import PlatformIO
 import Tar
@@ -92,34 +92,33 @@ struct Install: AsyncParsableCommand {
         abstract: "install a .wendy artifact (no reboot)"
     )
 
-    @Argument(help: "a local .wendy artifact path, or - for stdin (an http(s) url is not yet supported by this build)")
+    @Argument(help: "a local .wendy artifact path, an http(s) url, or - for stdin")
     var source: String
 
     mutating func run() async throws {
         bootstrapRuntime()
         try await runVerb {
-            if source.hasPrefix("http://") || source.hasPrefix("https://") {
-                throw InstallSourceError(
-                    message: "install: http(s) sources are not yet supported by this build (task 10.2); " +
-                        "pass a local file path or - for stdin"
-                )
-            }
-
             let logger = Logger(label: "wendyos-update")
             let engine = try makeEngine(progress: makeProgressCallback())
 
-            let fd: Int32 = source == "-" ? 0 : try LinuxSys.openRead(source)
-            defer { if fd != 0 { LinuxSys.close(fd) } }
+            let httpClient = HTTPClient(eventLoopGroupProvider: .singleton, configuration: installHTTPClientConfiguration)
+            defer { sharedInstallCancellation.disarm() }
 
-            let tar = TarReader { into, max in
-                var chunk = [UInt8](repeating: 0, count: max)
-                let n = try chunk.withUnsafeMutableBytes { ptr in try LinuxSys.read(fd, ptr) }
-                into = n == max ? chunk : Array(chunk[0..<n])
-                return n
+            let tar = try await openArtifactSource(source, httpClient: httpClient)
+
+            // `ArtifactReader.open`/`engine.install` pull bytes through
+            // `tar`'s synchronous closure, which — for an http(s) source —
+            // blocks a real OS thread waiting on the streamed download
+            // (see Download.swift's doc comment). Running that on a
+            // dedicated `Thread` rather than inline here keeps that
+            // blocking wait off Swift Concurrency's cooperative pool,
+            // uniformly for both source kinds (local reads settle
+            // instantly, so the extra thread hop costs them nothing
+            // observable).
+            let result = try await runOnDedicatedThread {
+                let reader = try ArtifactReader.open(tar)
+                return try blockingRun { try await engine.install(reader, blockTarget: RealBlockTarget()) }
             }
-            let reader = try ArtifactReader.open(tar)
-
-            let result = try await engine.install(reader, blockTarget: RealBlockTarget())
 
             emitEvent(makeInstallDoneJSON(result), stdoutIsTTY: stdoutIsTTY)
             logger.info(
@@ -132,18 +131,6 @@ struct Install: AsyncParsableCommand {
             )
         }
     }
-}
-
-/// Thrown by `install` for an `http://`/`https://` source: streaming a
-/// download is Task 10.2's scope, not this one's. Maps to exit 1, like any
-/// other generic CLI error.
-struct InstallSourceError: Error, Equatable, ExitCoded {
-    let message: String
-    var exitCode: Int32 { 1 }
-}
-
-extension InstallSourceError: CustomStringConvertible {
-    var description: String { message }
 }
 
 // MARK: - commit

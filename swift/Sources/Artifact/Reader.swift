@@ -13,7 +13,12 @@ private let maxManifestSize: Int64 = 4 << 20
 /// fully, and finish with `verifyPayloadDigests(uncompressedSHA256:)`.
 ///
 /// Ports `internal/artifact/reader.go`'s `Reader` type.
-public final class ArtifactReader {
+///
+/// `@unchecked Sendable` for the same reason as `TarReader` (which it
+/// wraps): never accessed concurrently, but `wendyos-update`'s `install
+/// <url>` bridge moves ownership of one onto a dedicated `Thread` — see
+/// `TarReader`'s doc comment.
+public final class ArtifactReader: @unchecked Sendable {
     public let manifest: Manifest
 
     private let tar: TarReader

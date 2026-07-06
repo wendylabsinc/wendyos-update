@@ -5,7 +5,18 @@
 /// repeatedly (returns 0 once the member body is fully consumed) before
 /// calling `next()` again. `next()` automatically skips any unread bytes
 /// (and block padding) left over from the previous member.
-public final class TarReader {
+///
+/// `@unchecked Sendable`: a `TarReader` is never accessed concurrently —
+/// every method call happens strictly in sequence — but ownership can
+/// legitimately move between execution contexts (e.g. `wendyos-update`'s
+/// `install <url>` bridges a `TarReader` fed by an async HTTP body task
+/// over to a dedicated `Thread` that drives `ArtifactReader`/`Engine
+/// .install`'s synchronous pull loop). The pull closure itself is a plain
+/// `(inout [UInt8], Int) throws -> Int`, not `@Sendable`, precisely
+/// because callers construct it inline with mutable local captures (an fd,
+/// a byte offset) that are likewise only ever touched from the single
+/// logical owner at a time.
+public final class TarReader: @unchecked Sendable {
     /// Pull source: fills `into` with up to `max` bytes and returns the
     /// count actually read; 0 means the source is exhausted.
     private let pull: (_ into: inout [UInt8], _ max: Int) throws -> Int

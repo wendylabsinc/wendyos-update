@@ -74,6 +74,14 @@ let package = Package(
         // `pack`/`verify-boot`/`version`, ported from `cmd/wendyos-update/
         // main.go`'s `switch os.Args[1]`.
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        // `install <url>`'s HTTP(S) streaming download (Task 10.2):
+        // async-http-client for the request/response, swift-nio for the
+        // response body's `ByteBuffer` async sequence and (in tests) an
+        // in-process HTTP/1.1 fixture server. Proven to link fully static
+        // against musl in a prior spike (async-http-client + NIOSSL built
+        // fully static) — no `curl`-`CommandRunner` fallback is needed.
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.20.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
     ],
     targets: [
         .executableTarget(
@@ -86,6 +94,8 @@ let package = Package(
                 .product(name: "IkigaJSON", package: "swift-json"),
                 .product(name: "Tar", package: "Tar"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOCore", package: "swift-nio"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: wantsStaticLink
@@ -103,6 +113,15 @@ let package = Package(
                 "WendyUpdate", "Engine", "Connector", "Model", "PlatformIO", "PlatformIOTesting",
                 "CLIError", "Artifact", "BlockDev",
                 .product(name: "WendyLog", package: "WendyLog"),
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                // In-process HTTP/1.1 fixture server for the `install <url>`
+                // integration tests (Task 10.2) — a real (if tiny) SwiftNIO
+                // server on 127.0.0.1, not a mock of AsyncHTTPClient.
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
