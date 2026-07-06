@@ -1,5 +1,13 @@
 import Connector
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import PlatformIO
 
 // Port of `internal/connector/tegrauefi/diagnostics.go`: `Diagnostics`,
@@ -249,16 +257,16 @@ extension TegraUEFI {
     /// Lists the immediate entries of `dir` (excluding `.`/`..`) via a raw
     /// `opendir`/`readdir` scan. `efivarsDir` is a real filesystem path in
     /// both production and tests, bypassing `fileStore` — matching
-    /// `efivarExists`'s direct `Glibc.access` use — since `fileStore`
+    /// `efivarExists`'s direct `access` use — since `fileStore`
     /// models the `rootDir`-prefixed regular filesystem instead. Returns
     /// an empty array if `dir` can't be opened, mirroring
     /// `filepath.Glob`'s best-effort "no matches" on a lookup failure.
     private static func directoryEntries(_ dir: String) -> [String] {
-        guard let dp = Glibc.opendir(dir) else { return [] }
-        defer { Glibc.closedir(dp) }
+        guard let dp = opendir(dir) else { return [] }
+        defer { closedir(dp) }
 
         var names: [String] = []
-        while let entry = Glibc.readdir(dp) {
+        while let entry = readdir(dp) {
             let name = withUnsafeBytes(of: entry.pointee.d_name) { raw -> String in
                 let ptr = raw.baseAddress!.assumingMemoryBound(to: CChar.self)
                 return String(cString: ptr)

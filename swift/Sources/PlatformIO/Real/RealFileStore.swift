@@ -1,5 +1,13 @@
 import Foundation
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import LinuxSys
 
 /// `FileStore` over POSIX file APIs (`Glibc` + `LinuxSys.fsync`), plus
@@ -31,7 +39,7 @@ public struct RealFileStore: FileStore {
         }
 
         let tmpPath = "\(path).tmp-\(ProcessInfo.processInfo.globallyUniqueString)"
-        let fd = tmpPath.withCString { Glibc.open($0, O_WRONLY | O_CREAT | O_TRUNC, mode) }
+        let fd = tmpPath.withCString { open($0, O_WRONLY | O_CREAT | O_TRUNC, mode) }
         guard fd >= 0 else {
             throw SysError(errno: errno, op: "open(O_CREAT|O_WRONLY|O_TRUNC)")
         }
@@ -54,7 +62,7 @@ public struct RealFileStore: FileStore {
         LinuxSys.close(fd)
 
         let renamed = tmpPath.withCString { tmp in
-            path.withCString { dst in Glibc.rename(tmp, dst) }
+            path.withCString { dst in rename(tmp, dst) }
         }
         guard renamed == 0 else {
             let renameErrno = errno
@@ -106,7 +114,7 @@ public struct RealFileStore: FileStore {
     public func resolveSymlink(_ path: String) -> String? {
         var buf = [Int8](repeating: 0, count: Int(PATH_MAX))
         guard let resolved = path.withCString({ cPath in
-            Glibc.realpath(cPath, &buf)
+            realpath(cPath, &buf)
         }) else {
             return nil
         }

@@ -1,5 +1,13 @@
 import Crypto
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import LinuxSys
 import Model
 import Tar
@@ -186,23 +194,23 @@ public enum ArtifactWriter {
         let dir = tempDirectory()
         var template = Array("\(dir)/wendy-pack-XXXXXX".utf8CString)
         let fd = template.withUnsafeMutableBufferPointer { buf in
-            Glibc.mkstemp(buf.baseAddress!)
+            mkstemp(buf.baseAddress!)
         }
         guard fd >= 0 else { throw SysError(errno: errno, op: "mkstemp") }
 
         let path = template.withUnsafeBufferPointer { buf in String(cString: buf.baseAddress!) }
-        _ = path.withCString { Glibc.unlink($0) }
+        _ = path.withCString { unlink($0) }
         return fd
     }
 
     /// Seeks `fd` back to its start, for the temp file's second (read-back)
     /// pass once the compressed payload has been fully written. Raw
-    /// `Glibc.lseek` rather than `LinuxSys` for the same reason
+    /// `lseek` rather than `LinuxSys` for the same reason
     /// `createUnlinkedTempFile` is: `LinuxSys.seekEnd` is the one seek
     /// primitive that type exposes, and adding a second (`SEEK_SET`) for
     /// this one call site isn't worth growing that shared surface.
     private static func rewind(_ fd: Int32) throws {
-        guard Glibc.lseek(fd, 0, Int32(SEEK_SET)) == 0 else {
+        guard lseek(fd, 0, Int32(SEEK_SET)) == 0 else {
             throw SysError(errno: errno, op: "lseek(SEEK_SET)")
         }
     }
@@ -248,7 +256,7 @@ private func hexDigitChar(_ nibble: UInt8) -> Character {
 /// Resolves the temp-file directory the way Go's `os.TempDir()` does:
 /// `$TMPDIR` if set and non-empty, else `/tmp`.
 private func tempDirectory() -> String {
-    if let raw = Glibc.getenv("TMPDIR") {
+    if let raw = getenv("TMPDIR") {
         let value = String(cString: raw)
         if !value.isEmpty { return value }
     }

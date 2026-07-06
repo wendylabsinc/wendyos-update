@@ -2,9 +2,10 @@
 # dsw — "docker swift wrapper". Canonical way to build/test the Swift tree.
 #
 # All Swift build/test for wendyos-update runs inside the Linux aarch64
-# toolchain container (libzstd/zlib, LinuxSys ioctls, and musl are not
-# buildable on macOS). Named volumes cache SwiftPM's dependency checkouts
-# and build products across invocations so repeated runs are fast.
+# toolchain container (zlib, LinuxSys ioctls, and musl are not buildable
+# on macOS; zstd itself is vendored so it builds anywhere the Swift
+# toolchain does). Named volumes cache SwiftPM's dependency checkouts and
+# build products across invocations so repeated runs are fast.
 #
 # Usage:
 #   scripts/dsw test               # swift test
@@ -12,8 +13,9 @@
 #   scripts/dsw <any swift args>
 set -euo pipefail
 # Default to the built dev image (swift/docker/Dockerfile): base toolchain
-# PLUS libzstd-dev (for the Zstd package's CZstd target) and the static
-# Linux SDK (for the release cross build). Build it once with:
+# PLUS zlib1g-dev (for the Zstd package's CZstd target, which vendors zstd
+# itself and links only system zlib) and the static Linux SDK (for the
+# release cross build). Build it once with:
 #   docker build -t wos-swift swift/docker
 # Override with WOS_SWIFT_IMAGE=... (e.g. the bare swiftlang base).
 IMG="${WOS_SWIFT_IMAGE:-wos-swift}"

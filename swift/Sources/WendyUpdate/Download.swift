@@ -2,7 +2,15 @@ import AsyncHTTPClient
 import CLIError
 import Dispatch
 import Foundation
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import LinuxSys
 import NIOCore
 import Tar

@@ -1,7 +1,15 @@
 import Artifact
 import CLIError
 import Crypto
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import LinuxSys
 import Model
 import Tar
@@ -194,7 +202,7 @@ private func writeAll(_ fd: Int32, _ bytes: [UInt8]) throws {
 /// calls — by the time either cleanup path runs, the pack has already
 /// failed, and there is nothing further to do with a removal error.
 private func removeFileIgnoringErrors(_ path: String) {
-    _ = path.withCString { Glibc.unlink($0) }
+    _ = path.withCString { unlink($0) }
 }
 
 /// Hex-encodes a digest's bytes as lowercase ASCII, without pulling in

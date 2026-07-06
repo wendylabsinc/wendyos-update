@@ -1,4 +1,12 @@
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 
 /// `Clock` over `gmtime_r`. Formats manually rather than through a
 /// `DateFormatter`/`ISO8601DateFormatter` so the output is pinned exactly

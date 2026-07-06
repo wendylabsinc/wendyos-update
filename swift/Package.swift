@@ -56,8 +56,9 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
         // zstd/gzip streaming (de)compression for the Artifact target's
         // writer (Task 3.4): compresses a rootfs image into the `.wendy`
-        // payload member. The wos-swift test image already has
-        // libzstd-dev/zlib1g-dev installed (see CZstd's `providers`).
+        // payload member. zstd is vendored into CZstd (compiled from
+        // source, no system libzstd needed); zlib1g-dev (for zlib.h) is
+        // still installed in the wos-swift image.
         .package(path: "Packages/Zstd"),
         // Structured logging for the Engine target's lifecycle-hooks runner
         // (Task 6.2) — mirrors hooks.go's slog usage. The log handler is

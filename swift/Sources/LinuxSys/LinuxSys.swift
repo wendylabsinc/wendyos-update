@@ -1,5 +1,47 @@
 import CLinuxSys
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK provides the same POSIX/libc
+// surface as Glibc under the `Musl` overlay module instead of `Glibc`;
+// every symbol this file uses (open/read/write/fsync/lseek/close/isatty
+// and the errno constants) exists identically in both.
+import Musl
+#endif
+
+// `LinuxSys`'s static methods below are deliberately named the same as
+// the libc functions they wrap (`open`, `read`, `write`, ...), so calls
+// from inside the enum must disambiguate from recursive self-calls. The
+// previous code did that with an explicit `Glibc.foo(...)` module
+// qualification, but that spelling doesn't exist when building against
+// the musl SDK (the module is `Musl` there instead) — and a single call
+// site can't spell both. These free-function wrappers sit outside the
+// enum's scope, where the bare libc name is unambiguous under either
+// module, and give both platforms one common spelling to call through.
+private func libcOpen(_ path: UnsafePointer<CChar>, _ flags: Int32) -> Int32 {
+    open(path, flags)
+}
+private func libcOpen(_ path: UnsafePointer<CChar>, _ flags: Int32, _ mode: mode_t) -> Int32 {
+    open(path, flags, mode)
+}
+private func libcWrite(_ fd: Int32, _ buf: UnsafeRawPointer?, _ count: Int) -> Int {
+    write(fd, buf, count)
+}
+private func libcRead(_ fd: Int32, _ buf: UnsafeMutableRawPointer?, _ count: Int) -> Int {
+    read(fd, buf, count)
+}
+private func libcFsync(_ fd: Int32) -> Int32 {
+    fsync(fd)
+}
+private func libcLseek(_ fd: Int32, _ offset: off_t, _ whence: Int32) -> off_t {
+    lseek(fd, offset, whence)
+}
+private func libcClose(_ fd: Int32) -> Int32 {
+    close(fd)
+}
+private func libcIsatty(_ fd: Int32) -> Int32 {
+    isatty(fd)
+}
 
 /// A raw syscall/ioctl failure, carrying the failing `errno` and the
 /// operation name for diagnostics. Callers compare `errno` against the
@@ -49,7 +91,7 @@ public enum LinuxSys {
     public static func openWriteCreate(_ path: String) throws -> Int32 {
         try retrying(op: "open(O_WRONLY|O_CREAT)") {
             path.withCString { cPath in
-                Glibc.open(cPath, O_WRONLY | O_CREAT, 0o644)
+                libcOpen(cPath, O_WRONLY | O_CREAT, 0o644)
             }
         }
     }
@@ -63,7 +105,7 @@ public enum LinuxSys {
     public static func openWriteCreateTruncate(_ path: String) throws -> Int32 {
         try retrying(op: "open(O_WRONLY|O_CREAT|O_TRUNC)") {
             path.withCString { cPath in
-                Glibc.open(cPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+                libcOpen(cPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
             }
         }
     }
@@ -73,7 +115,7 @@ public enum LinuxSys {
     /// may be less than `buf.count`.
     public static func write(_ fd: Int32, _ buf: UnsafeRawBufferPointer) throws -> Int {
         try retrying(op: "write") {
-            Glibc.write(fd, buf.baseAddress, buf.count)
+            libcWrite(fd, buf.baseAddress, buf.count)
         }
     }
 
@@ -81,13 +123,13 @@ public enum LinuxSys {
     /// `EINTR`), returning the byte count read (0 == EOF).
     public static func read(_ fd: Int32, _ buf: UnsafeMutableRawBufferPointer) throws -> Int {
         try retrying(op: "read") {
-            Glibc.read(fd, buf.baseAddress, buf.count)
+            libcRead(fd, buf.baseAddress, buf.count)
         }
     }
 
     /// Flushes `fd`'s data and metadata to stable storage.
     public static func fsync(_ fd: Int32) throws {
-        _ = try retrying(op: "fsync") { Glibc.fsync(fd) }
+        _ = try retrying(op: "fsync") { libcFsync(fd) }
     }
 
     /// Seeks to end-of-file, returning the resulting offset. Used as the
@@ -96,7 +138,7 @@ public enum LinuxSys {
     /// `blockdev.DeviceCapacity`).
     public static func seekEnd(_ fd: Int32) throws -> Int64 {
         let off = try retrying(op: "lseek(SEEK_END)") {
-            Glibc.lseek(fd, 0, Int32(SEEK_END))
+            libcLseek(fd, 0, Int32(SEEK_END))
         }
         return Int64(off)
     }
@@ -106,14 +148,14 @@ public enum LinuxSys {
     /// thread, and by the time `close` fails there is nothing actionable
     /// left to do with this fd. This matches the guidance in `close(2)`.
     public static func close(_ fd: Int32) {
-        _ = Glibc.close(fd)
+        _ = libcClose(fd)
     }
 
     /// Reports whether `fd` refers to a terminal — the same `TCGETS`
     /// ioctl underlies both `isatty(3)` and Go's
     /// `unix.IoctlGetTermios`/`log.IsTTY`.
     public static func isatty(_ fd: Int32) -> Bool {
-        Glibc.isatty(fd) == 1
+        libcIsatty(fd) == 1
     }
 
     /// Sets or clears the inode's immutable flag (the `chattr +i`/`-i`
@@ -151,7 +193,7 @@ public enum LinuxSys {
     private static func rawOpen(_ path: String, _ flags: Int32, op: String) throws -> Int32 {
         try retrying(op: op) {
             path.withCString { cPath in
-                Glibc.open(cPath, flags)
+                libcOpen(cPath, flags)
             }
         }
     }

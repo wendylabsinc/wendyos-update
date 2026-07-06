@@ -1,5 +1,13 @@
 import Connector
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import PlatformIO
 
 // Direct port of `internal/connector/tegrauefi/tegrauefi.go`'s
@@ -391,17 +399,17 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
     /// through the injectable `fileStore` seam (which models the
     /// `RootDir`-prefixed regular filesystem instead; see the type doc).
     func efivarExists(_ path: String) -> Bool {
-        path.withCString { Glibc.access($0, F_OK) == 0 }
+        path.withCString { access($0, F_OK) == 0 }
     }
 
     /// Scans `PATH` for an executable named `name`, mirroring Go's
     /// `exec.LookPath` as used by `detect()`.
     private static func commandExistsOnPath(_ name: String) -> Bool {
-        guard let pathEnv = Glibc.getenv("PATH") else { return false }
+        guard let pathEnv = getenv("PATH") else { return false }
         let pathVar = String(cString: pathEnv)
         for dir in pathVar.split(separator: ":") {
             let candidate = "\(dir)/\(name)"
-            if candidate.withCString({ Glibc.access($0, X_OK) == 0 }) {
+            if candidate.withCString({ access($0, X_OK) == 0 }) {
                 return true
             }
         }

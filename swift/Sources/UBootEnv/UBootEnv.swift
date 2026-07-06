@@ -1,5 +1,13 @@
 import Connector
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import PlatformIO
 
 // Direct port of `internal/connector/ubootenv/ubootenv.go`'s `Controller`
@@ -364,11 +372,11 @@ public final class UBootEnv: Connector, @unchecked Sendable {
     /// Scans `PATH` for an executable named `name`, mirroring Go's
     /// `exec.LookPath` as used by `detect()`.
     static func commandExistsOnPath(_ name: String) -> Bool {
-        guard let pathEnv = Glibc.getenv("PATH") else { return false }
+        guard let pathEnv = getenv("PATH") else { return false }
         let pathVar = String(cString: pathEnv)
         for dir in pathVar.split(separator: ":") {
             let candidate = "\(dir)/\(name)"
-            if candidate.withCString({ Glibc.access($0, X_OK) == 0 }) {
+            if candidate.withCString({ access($0, X_OK) == 0 }) {
                 return true
             }
         }
@@ -468,7 +476,7 @@ struct FwEnv: UBootEnvStore {
         // immediately, and on RPi the env is a file on the FAT
         // (CONFIG_ENV_IS_IN_FAT). A global sync gets the env write onto
         // disk before the reboot.
-        Glibc.sync()
+        sync()
     }
 
     /// Creates a scratch file with a guaranteed-unique name under
@@ -487,7 +495,7 @@ struct FwEnv: UBootEnvStore {
 
         var template = Array("\(dir)/.fwenv-XXXXXX".utf8CString)
         let fd = template.withUnsafeMutableBufferPointer { buf in
-            Glibc.mkstemp(buf.baseAddress!)
+            mkstemp(buf.baseAddress!)
         }
         guard fd >= 0 else {
             throw UBootEnvInternalError(detail: "mkstemp: errno \(errno)")
@@ -498,7 +506,7 @@ struct FwEnv: UBootEnvStore {
         var writeErrno: Int32 = 0
         contents.withUnsafeBytes { raw in
             while offset < raw.count {
-                let n = Glibc.write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
+                let n = write(fd, raw.baseAddress!.advanced(by: offset), raw.count - offset)
                 if n <= 0 {
                     writeErrno = errno
                     break
@@ -506,9 +514,9 @@ struct FwEnv: UBootEnvStore {
                 offset += n
             }
         }
-        Glibc.close(fd)
+        close(fd)
         guard offset == contents.count else {
-            _ = path.withCString { Glibc.unlink($0) }
+            _ = path.withCString { unlink($0) }
             throw UBootEnvInternalError(detail: "write script: errno \(writeErrno)")
         }
         return path

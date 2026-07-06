@@ -1,5 +1,13 @@
 import CLIError
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 import LinuxSys
 
 // efivarfs access for the NVIDIA RootfsStatusSlot variables.
@@ -264,6 +272,6 @@ public enum EfiVar {
     /// == nil` guard in `efivar.go`'s `writeVar` — clearing the immutable
     /// flag is only attempted on a variable that's actually there.
     private static func pathExists(_ path: String) -> Bool {
-        path.withCString { Glibc.access($0, F_OK) == 0 }
+        path.withCString { access($0, F_OK) == 0 }
     }
 }

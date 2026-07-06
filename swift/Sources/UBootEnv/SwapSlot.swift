@@ -1,5 +1,13 @@
 import Connector
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Musl)
+// The static-musl cross-compilation SDK exposes libc under the
+// `Musl` overlay module instead of `Glibc` (see LinuxSys.swift for
+// the fuller explanation); every symbol this file uses exists
+// identically in both.
+import Musl
+#endif
 
 // The slot-flip half of the U-Boot connector. All state lives in the
 // U-Boot environment (libubootenv); this connector keeps no files of its
@@ -145,12 +153,12 @@ extension UBootEnv {
 
     /// `stat(2)`, returning `nil` on failure. Broken out as its own
     /// function (rather than inlined at each call site) because `stat`
-    /// names both the C struct and the syscall function: the
-    /// module-qualified `Glibc.stat(...)` call resolves only to the
-    /// struct's initializer on this toolchain, so the syscall must be
-    /// called unqualified (plain `stat(...)`, relying on `import Glibc`
-    /// bringing the free function into scope) for overload resolution
-    /// to pick it.
+    /// names both the C struct and the syscall function: a
+    /// module-qualified `Glibc.stat(...)`/`Musl.stat(...)` call resolves
+    /// only to the struct's initializer on this toolchain, so the
+    /// syscall must be called unqualified (plain `stat(...)`, relying on
+    /// the platform-libc import above bringing the free function into
+    /// scope) for overload resolution to pick it.
     private static func statOrNil(_ path: String) -> stat? {
         var buf = stat()
         let rc: Int32 = path.withCString { cPath -> Int32 in
