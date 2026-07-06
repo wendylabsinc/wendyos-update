@@ -63,14 +63,36 @@ let installHTTPClientConfiguration = HTTPClient.Configuration(
 /// — see `installHTTPClientConfiguration`'s doc comment.
 let installRequestTimeout: TimeAmount = .seconds(30 + 30 + 60)
 
-/// Resolves `src` into a `TarReader` streaming its bytes: a local path (or
-/// `-` for stdin) opens synchronously exactly as Task 10.1 left it; an
-/// `http(s)://` URL streams the response body through `httpClient`.
-func openArtifactSource(_ src: String, httpClient: HTTPClient) async throws -> TarReader {
+/// A resolved install source: the `TarReader` the pipeline pulls from,
+/// plus a `teardown` the caller MUST run once the consumer (the
+/// `ArtifactReader.open` + `Engine.install` pipeline) stops for ANY reason
+/// — success, rejection, or thrown error.
+///
+/// Teardown matters because the consumer can legitimately stop long before
+/// the whole (multi-GB) body is drained: `ArtifactReader.open` reads only
+/// `manifest.json` (a few hundred bytes), after which `Engine.install` can
+/// reject on a routine policy gate (wrong device, bad version, digest
+/// mismatch) without ever pulling the payload. If nothing then tore down
+/// the background HTTP producer, it would keep `push`-ing at network speed,
+/// fill the bounded queue, and suspend forever on a queue no one drains —
+/// leaking the `Task` and the HTTP connection. `teardown` cancels the
+/// producer and fails the queue so any in-flight `push` returns at once.
+/// `producer` is exposed so a test can `await` its completion and prove no
+/// leak; it's `nil` for a local source (no background task).
+struct ArtifactSource: Sendable {
+    let tar: TarReader
+    let producer: Task<Void, Never>?
+    let teardown: @Sendable () -> Void
+}
+
+/// Resolves `src` into an `ArtifactSource` streaming its bytes: a local
+/// path (or `-` for stdin) opens synchronously exactly as Task 10.1 left
+/// it; an `http(s)://` URL streams the response body through `httpClient`.
+func openArtifactSource(_ src: String, httpClient: HTTPClient) async throws -> ArtifactSource {
     if src.hasPrefix("http://") || src.hasPrefix("https://") {
         return try await openHTTPTarReader(src, httpClient: httpClient)
     }
-    return try openLocalTarReader(src)
+    return ArtifactSource(tar: try openLocalTarReader(src), producer: nil, teardown: {})
 }
 
 /// Task 10.1's local-file/stdin `TarReader` wiring, unchanged: a single
@@ -95,7 +117,7 @@ func openLocalTarReader(_ path: String) throws -> TarReader {
 /// than silently finishing into a truncated artifact. The caller
 /// (`Command.swift`'s `Install.run()`) disarms it once the whole install
 /// pipeline (successful or not) is done.
-func openHTTPTarReader(_ url: String, httpClient: HTTPClient) async throws -> TarReader {
+func openHTTPTarReader(_ url: String, httpClient: HTTPClient) async throws -> ArtifactSource {
     let request = HTTPClientRequest(url: url)
     let response: HTTPClientResponse
     do {
@@ -126,7 +148,20 @@ func openHTTPTarReader(_ url: String, httpClient: HTTPClient) async throws -> Ta
     }
     sharedInstallCancellation.arm(cancelling: drainTask)
 
-    return TarReader { into, max in try queue.pull(into: &into, max: max) }
+    let tar = TarReader { into, max in try queue.pull(into: &into, max: max) }
+    // The consumer (this `tar`, driven by `ArtifactReader.open` +
+    // `Engine.install`) can stop pulling well before the body is drained
+    // — a routine manifest/device/digest rejection reads only the manifest
+    // and never touches the payload. `teardown` (run unconditionally by
+    // `Install.run()` once the pipeline finishes for ANY reason) cancels
+    // the producer and fails the queue, so a `push` suspended on a full
+    // queue returns at once instead of hanging forever on a queue that
+    // will never be drained again. Both steps are idempotent.
+    let teardown: @Sendable () -> Void = {
+        drainTask.cancel()
+        queue.fail(DownloadError(message: "download: \(url): consumer stopped before body fully read"))
+    }
+    return ArtifactSource(tar: tar, producer: drainTask, teardown: teardown)
 }
 
 /// A small, bounded, thread-safe byte queue bridging an async producer
@@ -158,19 +193,45 @@ final class BoundedByteQueue: @unchecked Sendable {
         self.capacity = capacity
     }
 
+    /// The outcome of one `tryAppend` attempt.
+    private enum AppendResult {
+        /// The chunk was enqueued.
+        case appended
+        /// The queue is at capacity — `push` should suspend and retry.
+        case full
+        /// The queue is finished/failed — `push` should stop entirely
+        /// (dropping the chunk is correct: on a clean EOF the producer is
+        /// done anyway, and on failure/cancellation the whole transfer is
+        /// being abandoned).
+        case terminal
+    }
+
     /// PRODUCER: appends `chunk`, suspending the calling `Task` (never
-    /// blocking its thread) while the queue is already full.
+    /// blocking its thread) while the queue is already full, and returning
+    /// immediately once the queue reaches a terminal state (EOF/failure/
+    /// cancellation) so a `fail()` that lands while this `push` is
+    /// suspended can never leave it re-registering on a queue no one will
+    /// ever drain again.
     func push(_ chunk: [UInt8]) async {
         guard !chunk.isEmpty else { return }
         while true {
-            if tryAppend(chunk) { return }
+            switch tryAppend(chunk) {
+            case .appended, .terminal:
+                return
+            case .full:
+                break
+            }
             await withCheckedContinuation { (resume: CheckedContinuation<Void, Never>) in
                 condition.lock()
-                // Re-check under the lock: space may have freed in the
-                // window between `tryAppend`'s unlock and this lock —
-                // resume immediately rather than registering a waiter
-                // that would never otherwise be signaled.
-                if buffered < capacity {
+                // Re-check terminal state AND capacity under the lock:
+                // either a `fail()`/`finish()` or a drain may have landed
+                // in the window between `tryAppend`'s unlock and this
+                // lock. Resume immediately in both cases rather than
+                // registering a waiter — the enclosing loop then re-runs
+                // `tryAppend`, which returns `.terminal` (→ `push` returns)
+                // or `.appended`. Only a still-full, still-live queue
+                // parks a waiter.
+                if finished || failure != nil || buffered < capacity {
                     condition.unlock()
                     resume.resume()
                 } else {
@@ -186,23 +247,31 @@ final class BoundedByteQueue: @unchecked Sendable {
     /// `async` function body (a Swift concurrency-safety guard against
     /// holding a lock across a suspension point) — this plain,
     /// non-`async` function is exempt, since it never suspends while
-    /// holding the lock. Returns whether `chunk` was appended.
-    private func tryAppend(_ chunk: [UInt8]) -> Bool {
+    /// holding the lock.
+    private func tryAppend(_ chunk: [UInt8]) -> AppendResult {
         condition.lock()
         defer { condition.unlock() }
-        guard buffered < capacity else { return false }
+        if finished || failure != nil { return .terminal }
+        guard buffered < capacity else { return .full }
         chunks.append(chunk)
         buffered += chunk.count
         condition.signal()
-        return true
+        return .appended
     }
 
     /// PRODUCER: signals a clean end-of-stream.
     func finish() {
         condition.lock()
         finished = true
+        let woken = waiters
+        waiters.removeAll()
         condition.signal()
         condition.unlock()
+        // Defensive: with a single producer there is no `push` suspended
+        // when `finish` runs (it's the producer itself, past its own
+        // loop), but waking any waiter costs nothing and keeps the
+        // terminal-state contract — a woken `push` re-checks and returns.
+        for w in woken { w.resume() }
     }
 
     /// PRODUCER (or an external canceller): signals an abnormal end — the

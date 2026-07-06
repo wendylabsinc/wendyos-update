@@ -104,19 +104,27 @@ struct Install: AsyncParsableCommand {
             let httpClient = HTTPClient(eventLoopGroupProvider: .singleton, configuration: installHTTPClientConfiguration)
             defer { sharedInstallCancellation.disarm() }
 
-            let tar = try await openArtifactSource(source, httpClient: httpClient)
+            let artifactSource = try await openArtifactSource(source, httpClient: httpClient)
+            // Tear down the background HTTP producer the moment the
+            // consumer pipeline below stops — success, rejection, or
+            // thrown error alike. Without this, a routine early rejection
+            // (wrong device/version/digest, read only from the manifest)
+            // would leave the producer `push`-ing a multi-GB body into a
+            // queue no one drains, hanging forever. No-op for a local
+            // source. (Runs before `disarm()` — declared later, so LIFO.)
+            defer { artifactSource.teardown() }
 
             // `ArtifactReader.open`/`engine.install` pull bytes through
-            // `tar`'s synchronous closure, which — for an http(s) source —
-            // blocks a real OS thread waiting on the streamed download
-            // (see Download.swift's doc comment). Running that on a
-            // dedicated `Thread` rather than inline here keeps that
+            // the source's synchronous closure, which — for an http(s)
+            // source — blocks a real OS thread waiting on the streamed
+            // download (see Download.swift's doc comment). Running that on
+            // a dedicated `Thread` rather than inline here keeps that
             // blocking wait off Swift Concurrency's cooperative pool,
             // uniformly for both source kinds (local reads settle
             // instantly, so the extra thread hop costs them nothing
             // observable).
             let result = try await runOnDedicatedThread {
-                let reader = try ArtifactReader.open(tar)
+                let reader = try ArtifactReader.open(artifactSource.tar)
                 return try blockingRun { try await engine.install(reader, blockTarget: RealBlockTarget()) }
             }
 

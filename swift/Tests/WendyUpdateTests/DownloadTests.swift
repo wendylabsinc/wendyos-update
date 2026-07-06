@@ -121,10 +121,13 @@ private func manifestJSON(
     return Array(json.utf8)
 }
 
-private func buildWendyArchive(payload: [UInt8], artifactName: String, artifactVersion: String) throws -> [UInt8] {
+private func buildWendyArchive(
+    payload: [UInt8], artifactName: String, artifactVersion: String,
+    compatibleDevices: [String] = ["jetson-agx-thor"]
+) throws -> [UInt8] {
     let manifestBytes = manifestJSON(
         artifactName: artifactName, artifactVersion: artifactVersion,
-        compatibleDevices: ["jetson-agx-thor"], payloadSize: payload.count,
+        compatibleDevices: compatibleDevices, payloadSize: payload.count,
         sha256: sha256Hex(payload), bootloaderUpdate: false, minToolVersion: "0.1.0"
     )
     let sink = ByteSink()
@@ -253,9 +256,10 @@ struct DownloadTests {
         defer { sharedInstallCancellation.disarm() }
 
         let result = try await withHTTPClient { httpClient in
-            let tar = try await openArtifactSource(
+            let src = try await openArtifactSource(
                 "http://127.0.0.1:\(server.port)/artifact.wendy", httpClient: httpClient
             )
+            defer { src.teardown() }
 
             let fs = FakeFileStore()
             writeDeviceType(fs)
@@ -263,13 +267,17 @@ struct DownloadTests {
             let blockTarget = makeBlockTarget()
 
             let result = try await runOnDedicatedThread {
-                let reader = try ArtifactReader.open(tar)
+                let reader = try ArtifactReader.open(src.tar)
                 return try blockingRun { try await engine.install(reader, blockTarget: blockTarget) }
             }
 
             #expect(result.artifactVersion == "0.16.0")
             #expect(result.targetSlot == .b)
             #expect(blockTarget.devices["/dev/fake-b"]?.written == payload)
+            // The producer completes on its own after a fully-drained,
+            // successful stream (clean EOF) — proves no leak on the happy
+            // path too.
+            await src.producer?.value
             return result
         }
 
@@ -304,6 +312,60 @@ struct DownloadTests {
             } catch {
                 Issue.record("expected DownloadError, got \(error)")
             }
+        }
+    }
+
+    /// Regression for the two concurrency bugs found reviewing Task 10.2:
+    ///   1. the producer would leak/hang when the CONSUMER failed first
+    ///      (nothing tore it down), and
+    ///   2. a `push` suspended on a full queue when `fail()` landed would
+    ///      re-register instead of noticing the terminal state.
+    /// Here the consumer rejects at the device gate — after reading only
+    /// the manifest, never the payload — while the server streams a body
+    /// LARGER than the queue capacity (so the producer genuinely fills the
+    /// queue and suspends). The install must throw promptly (`.rejected` →
+    /// exit 3) AND the producer must be torn down (its `Task` completes
+    /// rather than hanging forever — asserted by `await`-ing it, which
+    /// would deadlock the test if the fix regressed).
+    @Test func consumerRejectionTearsDownProducerWithoutHanging() async throws {
+        // 6 MiB > the queue's 4 MiB default capacity.
+        let payload = [UInt8](repeating: 0x5A, count: 6 << 20)
+        let archive = try buildWendyArchive(
+            payload: payload,
+            artifactName: "wendyos-image-some-other-board-0.16.0",
+            artifactVersion: "0.16.0",
+            compatibleDevices: ["some-other-board"] // device below is jetson-agx-thor → rejected
+        )
+        let server = try FixtureHTTPServer(okPath: "/artifact.wendy", body: archive)
+        defer { try? server.shutdown() }
+        defer { sharedInstallCancellation.disarm() }
+
+        try await withHTTPClient { httpClient in
+            let src = try await openArtifactSource(
+                "http://127.0.0.1:\(server.port)/artifact.wendy", httpClient: httpClient
+            )
+
+            let fs = FakeFileStore()
+            writeDeviceType(fs, board: "jetson-agx-thor")
+            let engine = makeTestEngine(fs: fs)
+            let blockTarget = makeBlockTarget()
+
+            await #expect(throws: EngineError.self) {
+                _ = try await runOnDedicatedThread {
+                    let reader = try ArtifactReader.open(src.tar)
+                    return try blockingRun { try await engine.install(reader, blockTarget: blockTarget) }
+                }
+            }
+            // Nothing was written to the target — the reject fired before
+            // any payload write.
+            #expect(blockTarget.openedPaths.isEmpty)
+
+            // The crux: tear the producer down and confirm it actually
+            // finishes. If bug #1 (no teardown path) or bug #2 (push
+            // re-registers past a terminal state) regressed, this `await`
+            // would never return and the test would hang.
+            src.teardown()
+            await src.producer?.value
         }
     }
 }
