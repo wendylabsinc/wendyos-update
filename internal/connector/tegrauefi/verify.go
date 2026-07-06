@@ -20,16 +20,19 @@ const (
 	esrtSuccess   = 0
 	esrtUEFIErrLo = 1 // 1..6: standard UEFI capsule errors
 	esrtUEFIErrHi = 6
-	// 6163: NVIDIA "CheckTheImage failed" — the capsule was rejected. NOT a
-	// cert/auth failure (test-cert capsules verify fine on a clean device).
-	// Observed to be boot-chain-state dependent: staging onto an un-settled
-	// or pending boot-chain transition produces it; a fresh flash or a
-	// fully-committed prior apply clears it (t264 investigation 2026-06-14;
-	// NVIDIA fwd: forums.developer.nvidia.com thread 368593).
-	esrtNvidiaCheckImageFail = 6163
-	esrtNvidiaSKUMismatch    = 6164   // device SKU not in the capsule's BUP
-	esrtNvidiaVendorLo       = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
-	esrtNvidiaVendorHi       = 0x4000
+	// 6163 = LAS_ERROR_BOOT_CHAIN_UPDATE_CANCELED (NOT "CheckTheImage failed"; that
+	// was a mis-read of a different firmware's code range). Proven from the r39.2
+	// edk2-nvidia source: EDK2 FmpDevicePkg base LAST_ATTEMPT_STATUS_DEVICE_LIBRARY_MIN
+	// = 0x1800 (6144), and the enum entry in TegraFmp.c is #19 → 6163. Set by
+	// FmpTegraCheckImage (TegraFmp.c) via BootChainDxe.c BootChainCheckAndCancelUpdate,
+	// which CANCELS the capsule while BootChainFwNext OR BootChainFwStatus exists (an
+	// "FMP conflict" with a pending nvbootctrl-style FW-chain switch). SwapSlot now
+	// clears both before staging (settleBootChain), so a fresh 6163 here means the
+	// chain re-entered a pending state after staging — a real defect, not stale cruft.
+	esrtBootChainUpdateCanceled = 6163
+	esrtNvidiaSKUMismatch       = 6164   // device SKU not in the capsule's BUP
+	esrtNvidiaVendorLo          = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
+	esrtNvidiaVendorHi          = 0x4000
 )
 
 // BootIsCompromised reports whether the firmware flagged the slot we
@@ -88,9 +91,9 @@ func (c *Controller) BootIsCompromised() (bool, error) {
 //  3. FALLBACK:  we booted, assume success — but say so loudly
 //
 // Validated ESRT codes (t234 incident analysis + t264 Phase 1):
-// 0 success; 1-6 standard UEFI capsule errors; 6163 NVIDIA "CheckTheImage
-// failed" / capsule rejected (boot-chain-state dependent, NOT a cert/auth
-// failure — see the const above); 6164 NVIDIA SKU mismatch; 0x1000-0x4000
+// 0 success; 1-6 standard UEFI capsule errors; 6163 = LAS_ERROR_BOOT_CHAIN_UPDATE_CANCELED
+// (capsule canceled by a pending FW-chain switch — see the const above);
+// 6164 NVIDIA SKU mismatch; 0x1000-0x4000
 // NVIDIA vendor range. nvbootctrl's own capsule status is NOT consulted —
 // NVIDIA documents it as unreliable.
 func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
@@ -132,8 +135,8 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 			return nil
 		case status >= esrtUEFIErrLo && status <= esrtUEFIErrHi:
 			return fmt.Errorf("platform verify: ESRT status %d (standard UEFI capsule error)", status)
-		case status == esrtNvidiaCheckImageFail:
-			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: capsule rejected / CheckTheImage failed — typically a pending/un-settled boot-chain state, not a signature problem)", esrtNvidiaCheckImageFail)
+		case status == esrtBootChainUpdateCanceled:
+			return fmt.Errorf("platform verify: ESRT status %d (LAS_ERROR_BOOT_CHAIN_UPDATE_CANCELED — capsule canceled by a pending FW-chain switch despite settleBootChain; the chain re-entered a pending state after staging)", esrtBootChainUpdateCanceled)
 		case status == esrtNvidiaSKUMismatch:
 			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: device SKU not included in the capsule's BUP)", esrtNvidiaSKUMismatch)
 		case status >= esrtNvidiaVendorLo && status <= esrtNvidiaVendorHi:

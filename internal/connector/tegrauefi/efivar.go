@@ -119,6 +119,28 @@ func writeVar(path string, payload []byte) error {
 	return nil
 }
 
+// deleteVar removes an efivarfs variable: clear the immutable inode flag, then
+// unlink — the native equivalent of `chattr -i` + `rm`. A missing variable is a
+// no-op. This works only for variables the firmware exposes with RUNTIME_ACCESS
+// (BootChainFwNext/BootChainFwStatus are NV+BS+RT, BootChainDxe.c); a var
+// lacking it (e.g. RootfsRedundancyLevel) refuses deletion with EINVAL. Proven
+// on Orin Nano t234/r39.2 to clear both BootChainFw* vars
+// (capture-orin-capsule.sh --settle-probe, 2026-07-06).
+func deleteVar(path string) error {
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	if err := clearImmutable(path); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("unlink: %w", err)
+	}
+	return nil
+}
+
 // osIndicationsProcessCapsule is bit 2 of the OsIndications UINT64:
 // "process capsule(s) on next boot". Validated on Thor: armed variable
 // reads 07 00 00 00 04 00 00 00 00 00 00 00 (4-byte attrs + UINT64).

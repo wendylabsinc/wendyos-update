@@ -103,6 +103,13 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 		return fmt.Errorf("swap to slot %s: bootloader update requested by rootfs marker but capsule missing at %s", s, CapsuleSrcPath)
 	}
 
+	// Clear any pending FW-chain switch first: the firmware CANCELS a capsule
+	// (last_attempt_status 6163 = LAS_ERROR_BOOT_CHAIN_UPDATE_CANCELED) while
+	// BootChainFwNext or BootChainFwStatus exists. See settleBootChain.
+	if err := c.settleBootChain(); err != nil {
+		return fmt.Errorf("swap to slot %s: %w", s, err)
+	}
+
 	// Save the current bootloader version for post-reboot verification
 	// (verify-bootloader-update's primary check).
 	if ver, err := c.bootloaderVersion(); err == nil {
@@ -159,6 +166,39 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 // engine should paper over.
 func (c *Controller) capsuleUpdateEffective() bool {
 	return firmwareSupportsCapsuleOnDisk(filepath.Join(c.EfivarsDir, "OsIndicationsSupported-"+EfiGlobalGUID))
+}
+
+// bootChainVars are the pending-FW-chain-switch UEFI variables (NVIDIA vendor
+// namespace, VendorGUID). While either exists the firmware CANCELS a capsule
+// update with last_attempt_status 6163 (LAS_ERROR_BOOT_CHAIN_UPDATE_CANCELED):
+// TegraFmp.c FmpTegraCheckImage → BootChainDxe.c BootChainCheckAndCancelUpdate
+// cancels if BootChainFwNext OR BootChainFwStatus is present. The firmware
+// deletes BootChainFwNext itself on the cancel but NEVER deletes
+// BootChainFwStatus, so a rolled-back rootfs-only OTA (which set BootChainFwNext
+// via nvbootctrl set-active-boot-slot) leaves BootChainFwStatus set and every
+// later capsule 6163s until it is cleared out-of-band.
+var bootChainVars = []string{"BootChainFwNext", "BootChainFwStatus"}
+
+// settleBootChain clears any pending FW-chain switch so the capsule is not
+// canceled for an "FMP conflict". Deleting these efivars is the same operation
+// the firmware performs on BootChainFwNext, and was proven on-device to clear
+// both (Orin Nano t234/r39.2, capture-orin-capsule.sh --settle-probe, 2026-07-06;
+// nvbootctrl has no mark-boot-successful there, so efivarfs delete is the only
+// mechanism). Safe here because the engine serializes OTAs: at capsule-stage
+// time a pending switch is a stale, un-committed prior attempt — not a live
+// in-flight update.
+func (c *Controller) settleBootChain() error {
+	for _, name := range bootChainVars {
+		path := filepath.Join(c.EfivarsDir, name+"-"+VendorGUID)
+		_, statErr := os.Stat(path)
+		if err := deleteVar(path); err != nil {
+			return fmt.Errorf("clear pending FW-chain var %s: %w", name, err)
+		}
+		if statErr == nil {
+			slog.Info("swap: cleared pending FW-chain variable to avoid capsule cancel (6163)", "var", name)
+		}
+	}
+	return nil
 }
 
 // recordBootAttempt notes which slot the next boot targets — input for

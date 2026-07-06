@@ -60,6 +60,37 @@ func TestCapsuleUpdateEffective(t *testing.T) {
 	}
 }
 
+// settleBootChain must clear the pending-FW-chain-switch UEFI variables that
+// make the firmware cancel a capsule with 6163 (LAS_ERROR_BOOT_CHAIN_UPDATE_CANCELED):
+// both BootChainFwNext and BootChainFwStatus. It must also be a no-op when they
+// are absent. On-device (Orin Nano r39.2) efivarfs delete clears both.
+func TestSettleBootChain(t *testing.T) {
+	c := testController(t)
+	next := filepath.Join(c.EfivarsDir, "BootChainFwNext-"+VendorGUID)
+	status := filepath.Join(c.EfivarsDir, "BootChainFwStatus-"+VendorGUID)
+
+	// The stale, capsule-blocking state: both variables present.
+	for _, p := range []string{next, status} {
+		if err := os.WriteFile(p, []byte{0x07, 0, 0, 0, 0x01, 0, 0, 0}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := c.settleBootChain(); err != nil {
+		t.Fatalf("settleBootChain with vars present: %v", err)
+	}
+	for _, p := range []string{next, status} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("expected %s deleted, stat err = %v", filepath.Base(p), err)
+		}
+	}
+
+	// Idempotent: a clean chain settles without error.
+	if err := c.settleBootChain(); err != nil {
+		t.Fatalf("settleBootChain when already clean: %v", err)
+	}
+}
+
 // installSwapSetup wires a controller so SwapSlot(_, true) can reach the
 // marker-inspection branch without real block devices: PartitionFor resolves
 // via a by-partlabel symlink under RootDir, and mountFn returns a fake rootfs
