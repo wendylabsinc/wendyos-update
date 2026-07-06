@@ -157,7 +157,14 @@ let package = Package(
         ),
         .target(
             name: "PlatformIOTesting",
-            dependencies: ["PlatformIO"],
+            dependencies: [
+                "PlatformIO",
+                // `FakeConnector` (Task 11.1) lives here rather than in a
+                // single test target's file so both `EngineTests` and
+                // `E2ETests` can share the exact same `Connector` call-log
+                // test double without duplicating it.
+                "Connector",
+            ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
         .testTarget(
@@ -256,6 +263,23 @@ let package = Package(
                 "Engine", "Model", "PlatformIO", "PlatformIOTesting", "Connector", "Artifact", "BlockDev",
                 .product(name: "Tar", package: "Tar"),
                 .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // End-to-end lifecycle coverage (Task 11.1): drives the real
+        // `Engine` (install -> commit, and install -> fallback -> rollback)
+        // over a `.wendy` built with `ArtifactWriter.pack`, with fakes only
+        // at the platform seam (`FakeConnector`/`FakeFileStore`/
+        // `FakeBlockTarget`, all from `PlatformIOTesting`) — as opposed to
+        // `EngineTests`, which exercises each verb's internal branches in
+        // isolation.
+        .testTarget(
+            name: "E2ETests",
+            dependencies: [
+                "Engine", "Artifact", "BlockDev", "Connector", "Model", "PlatformIO", "PlatformIOTesting",
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)]
         ),
