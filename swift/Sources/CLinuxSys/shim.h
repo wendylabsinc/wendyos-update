@@ -17,7 +17,22 @@
 #define CLINUXSYS_SHIM_H
 
 #include <sys/ioctl.h>
-#include <linux/fs.h>
+
+// linux/fs.h is not shipped in the musl cross-compilation sysroot, so the
+// three constants it would provide are defined directly here instead of
+// included. They are stable kernel UAPI (unchanged since ext2 in the
+// 1990s), so hardcoding them is safe. The #ifndef guards mean a sysroot
+// that DOES provide linux/fs.h (glibc) still wins, keeping native and
+// musl builds byte-identical in behavior.
+#ifndef FS_IMMUTABLE_FL
+#define FS_IMMUTABLE_FL 0x00000010
+#endif
+#ifndef FS_IOC_GETFLAGS
+#define FS_IOC_GETFLAGS _IOR('f', 1, long)
+#endif
+#ifndef FS_IOC_SETFLAGS
+#define FS_IOC_SETFLAGS _IOW('f', 2, long)
+#endif
 
 static inline int wos_ioctl_get_flags(int fd, int *flags) {
     return ioctl(fd, FS_IOC_GETFLAGS, flags);
