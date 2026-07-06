@@ -78,10 +78,13 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
 
     // MARK: - CurrentSlot
 
-    /// Runs `nvbootctrl -t rootfs get-current-slot`. Output validated on
-    /// r36 and r38: a single digit, `0` or `1`.
+    /// Runs `nvbootctrl [-t rootfs] get-current-slot` — the boot-chain
+    /// slot on Orin (`bootChainSlotAB`), the rootfs-redundancy slot
+    /// elsewhere. The two are coupled, so the running rootfs slot is the
+    /// same either way. Output validated on r36 and r38: a single digit,
+    /// `0` or `1`.
     public func currentSlot() throws -> Slot {
-        let result = commandRunner.run([nvbootctrl, "-t", "rootfs", "get-current-slot"])
+        let result = commandRunner.run([nvbootctrl] + nvbootctrlSlotArgs() + ["get-current-slot"])
         guard result.exitCode == 0 else {
             throw TegraUEFIError.currentSlotCommandFailed(Self.decodeCombined(result))
         }
@@ -268,6 +271,13 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
     /// running-slot vs target-slot check still catches a genuine no-op
     /// fallback). Ports `tegrauefi.go`'s `PreflightInstall`.
     public func preflightInstall() throws {
+        // Boot-chain A/B (Orin) does not use RootfsRedundancyLevel at all
+        // — the chain switch moves the coupled rootfs slot without it —
+        // so there is nothing to arm and nothing to preflight. (The var
+        // is unarmable from the OS on Orin anyway; blocking on it is
+        // exactly what this replaces.)
+        if bootChainSlotAB() { return }
+
         let path = redundancyLevelVarPath()
         guard efivarExists(path) else {
             throw TegraUEFIError.redundancyNotArmed
@@ -289,11 +299,12 @@ public final class TegraUEFI: Connector, BootConfirmer, InstallPreflighter, @unc
 
     // MARK: - ConfirmBoot
 
-    /// `nvbootctrl -t rootfs mark-boot-successful`: tells UEFI this boot
-    /// succeeded, stopping the rootfs A/B boot-validation watchdog and
-    /// retry countdown. Ports `tegrauefi.go`'s `ConfirmBoot`.
+    /// `nvbootctrl [-t rootfs] mark-boot-successful`: tells UEFI this boot
+    /// succeeded, stopping the boot-validation watchdog and retry
+    /// countdown for the running slot's layer (boot-chain on Orin,
+    /// rootfs-redundancy elsewhere). Ports `tegrauefi.go`'s `ConfirmBoot`.
     public func confirmBoot() throws {
-        let result = commandRunner.run([nvbootctrl, "-t", "rootfs", "mark-boot-successful"])
+        let result = commandRunner.run([nvbootctrl] + nvbootctrlSlotArgs() + ["mark-boot-successful"])
         guard result.exitCode == 0 else {
             throw TegraUEFIError.confirmBootFailed(Self.decodeCombined(result))
         }

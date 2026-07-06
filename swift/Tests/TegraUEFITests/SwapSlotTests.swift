@@ -74,6 +74,13 @@ private func installSwapSetup(
 /// install swap for an image that carries the bootloader marker must
 /// still switch the active slot via `nvbootctrl` — otherwise the update
 /// silently no-ops. It must NOT stage a capsule or arm `OsIndications`.
+///
+/// This fixture is Orin (tegra234), so the slot switch must go to the
+/// BOOT CHAIN layer (no `-t rootfs`) per `nvbootctrlSlotArgs`/
+/// `bootChainSlotAB` — Go's `TestSwapSlotSwitchesSlotWhenCapsuleIneffective`
+/// still asserts a literal `-t rootfs set-active-boot-slot 1`, which is
+/// stale against the current `main` source and fails there too (verified
+/// by running it); this port asserts the actual current behavior instead.
 @Test func swapSlotSwitchesSlotWhenCapsuleIneffective() throws {
     let files = FakeFileStore()
     let rootDir = "/rootdir"
@@ -99,7 +106,8 @@ private func installSwapSetup(
 
     try conn.swapSlot(.b, stagePlatformUpdate: true)
 
-    #expect(cmd.ranCommand(containing: "-t rootfs set-active-boot-slot 1"))
+    #expect(cmd.ranCommand(containing: "set-active-boot-slot 1"))
+    #expect(!cmd.ranCommand(containing: "-t rootfs"))
     #expect(mounter.callCount == 1)
 
     // OsIndications must not be armed (no capsule to process) — the
@@ -204,4 +212,48 @@ private func installSwapSetup(
     cmd.script(containing: "set-active-boot-slot", stdout: "denied", exitCode: 1)
 
     #expect(throws: TegraUEFIError.self) { try conn.swapSlot(.b, stagePlatformUpdate: false) }
+}
+
+// MARK: - Orin boot-chain A/B rollback routing (ports
+// TestSwapSlotRollbackTargetsCorrectNvbootctrlLayer)
+
+struct RollbackLayerCase: Sendable {
+    let name: String
+    let soc: String
+    let wantRootfs: Bool
+}
+
+private let rollbackLayerCases: [RollbackLayerCase] = [
+    .init(name: "orin uses boot chain", soc: "tegra234", wantRootfs: false),
+    .init(name: "thor uses rootfs redundancy", soc: "tegra264", wantRootfs: true),
+]
+
+/// The fix for the original Orin failure: a slot switch on Orin must go to
+/// the boot chain (no `-t rootfs`), which flips the coupled rootfs slot
+/// without the unarmable `RootfsRedundancyLevel` var. Thor keeps
+/// `-t rootfs`. Ports `TestSwapSlotRollbackTargetsCorrectNvbootctrlLayer`.
+@Test(arguments: rollbackLayerCases)
+func rollbackSwapTargetsCorrectNvbootctrlLayer(_ tc: RollbackLayerCase) throws {
+    let files = FakeFileStore()
+    let rootDir = "/rootdir"
+    try files.writeAtomic(
+        rootDir + "/proc/device-tree/compatible",
+        Array("nvidia,board\0nvidia,\(tc.soc)\0".utf8),
+        mode: 0o644
+    )
+    let cmd = FakeTegraCommandRunner()
+    cmd.script(containing: "get-current-slot", stdout: "0\n")
+    let conn = TegraUEFI(
+        efivarsDir: makeTempDir("rollback-layer"),
+        rootDir: rootDir,
+        commandRunner: cmd,
+        fileStore: files,
+        mountRootfs: { _ in fatalError("rollback must never mount the rootfs") },
+        mountESP: { _ in fatalError("rollback must never mount the ESP") }
+    )
+
+    try conn.swapSlot(.b, stagePlatformUpdate: false)
+
+    #expect(cmd.ranCommand(containing: "set-active-boot-slot 1"), "case: \(tc.name)")
+    #expect(cmd.ranCommand(containing: "-t rootfs") == tc.wantRootfs, "case: \(tc.name)")
 }

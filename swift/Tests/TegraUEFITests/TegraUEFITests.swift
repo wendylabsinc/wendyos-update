@@ -357,6 +357,72 @@ private let redundancyZeroLevel: [UInt8] = [0x07, 0x00, 0x00, 0x00, 0x00, 0x00, 
     try conn.preflightInstall()  // must not throw
 }
 
+// MARK: - Orin boot-chain A/B slot layer (ports TestBootChainModeBySoC /
+// TestPreflightInstallPassesOnBootChainOrin / TestCurrentSlotUsesBootChainOnOrin)
+
+/// Writes a fake `/proc/device-tree/compatible` under `rootDir` so the SoC
+/// gates (`bootChainSlotAB`/`capsuleUpdateEffective`) resolve. `compatible`
+/// is a NUL-separated list of "vendor,soc" strings. Mirrors
+/// `tegrauefi_test.go`'s `fakeSoC`.
+func writeSoCCompatible(_ files: FakeFileStore, rootDir: String, _ soc: String) {
+    try? files.writeAtomic(
+        rootDir + "/proc/device-tree/compatible",
+        Array("nvidia,board\0nvidia,\(soc)\0".utf8),
+        mode: 0o644
+    )
+}
+
+struct BootChainCase: Sendable {
+    let name: String
+    let soc: String?  // nil = no compatible file (unknown SoC)
+    let bootChain: Bool
+}
+
+private let bootChainCases: [BootChainCase] = [
+    .init(name: "orin t234 -> boot chain", soc: "tegra234", bootChain: true),
+    .init(name: "thor t264 -> rootfs redundancy", soc: "tegra264", bootChain: false),
+    .init(name: "unknown SoC -> rootfs redundancy", soc: nil, bootChain: false),
+]
+
+/// On Orin (tegra234) the rootfs-redundancy layer is unarmable from the OS,
+/// so the connector drives the coupled BOOT CHAIN instead: `nvbootctrl`
+/// WITHOUT `-t rootfs`. Thor (tegra264) and any unknown SoC keep the
+/// rootfs-redundancy layer (`-t rootfs`). Ports `TestBootChainModeBySoC`.
+@Test(arguments: bootChainCases)
+func bootChainModeSelectsLayerBySoC(_ tc: BootChainCase) throws {
+    let (conn, _, files, _) = makeConnector()
+    if let soc = tc.soc {
+        writeSoCCompatible(files, rootDir: "/rootdir", soc)
+    }
+    #expect(conn.bootChainSlotAB() == tc.bootChain, "case: \(tc.name)")
+    let args = conn.nvbootctrlSlotArgs()
+    let wantRootfs = !tc.bootChain
+    #expect(args.contains("-t") == wantRootfs, "case: \(tc.name)")
+}
+
+/// `currentSlot` on Orin reads the boot-chain slot (no `-t rootfs`); the
+/// coupled rootfs slot is the same value. Ports
+/// `TestCurrentSlotUsesBootChainOnOrin`.
+@Test func currentSlotUsesBootChainOnOrin() throws {
+    let (conn, cmd, files, _) = makeConnector()
+    writeSoCCompatible(files, rootDir: "/rootdir", "tegra234")
+    cmd.script(containing: "get-current-slot", stdout: "1\n")
+
+    #expect(try conn.currentSlot() == .b)
+    #expect(!cmd.ranCommand(containing: "-t rootfs"))
+}
+
+/// On Orin, boot-chain A/B needs no `RootfsRedundancyLevel`, so
+/// `preflightInstall` must PASS even though the var is absent — the exact
+/// state that (correctly) blocks on the rootfs-redundancy path. Ports
+/// `TestPreflightInstallPassesOnBootChainOrin`.
+@Test func preflightInstallPassesOnBootChainOrin() throws {
+    let (conn, _, files, _) = makeConnector()  // no RootfsRedundancyLevel var
+    writeSoCCompatible(files, rootDir: "/rootdir", "tegra234")
+
+    try conn.preflightInstall()  // must not throw
+}
+
 // MARK: - ConfirmBoot (ports TestConfirmBootRunsMarkBootSuccessful)
 
 @Test func confirmBootRunsMarkBootSuccessful() throws {

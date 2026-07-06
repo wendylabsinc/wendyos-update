@@ -128,13 +128,63 @@ extension TegraUEFI {
     /// is validated to process it; everything else (including an
     /// unreadable `compatible`) is treated as ineffective.
     func capsuleUpdateEffective() -> Bool {
+        socCompatibleContains(Self.capsuleEffectiveSoC)
+    }
+
+    /// The device-tree `compatible` token for Orin (t234), the platform
+    /// that drives A/B by switching the BOOT CHAIN rather than the
+    /// rootfs-redundancy slot. See `bootChainSlotAB`.
+    static let bootChainSlotABSoC = "tegra234"
+
+    /// Reports whether this SoC does OS-driven rootfs A/B by switching the
+    /// BOOT CHAIN (`nvbootctrl` WITHOUT `-t rootfs`) instead of the
+    /// rootfs-redundancy slot (`nvbootctrl -t rootfs`).
+    ///
+    /// NVIDIA couples the two layers — boot chain N <-> rootfs slot N —
+    /// but the rootfs-redundancy layer is gated by the
+    /// `RootfsRedundancyLevel` UEFI variable, which is UNARMABLE from the
+    /// OS on Orin (t234): it is a flash-time device-tree setting, and
+    /// every efivarfs write returns `EINVAL`. With it unarmed, `nvbootctrl
+    /// -t rootfs set-active-boot-slot` is a silent no-op and every OTA
+    /// rolls back. The boot-chain layer needs no such variable: a
+    /// capsule-on-disk update on Orin (which switches the chain and makes
+    /// NO `nvbootctrl` call) was observed to flip the coupled rootfs slot,
+    /// proving the chain switch moves the rootfs. So on Orin we drive the
+    /// chain directly with `nvbootctrl` and skip the redundancy machinery
+    /// entirely.
+    ///
+    /// Only Orin (tegra234) opts in. Thor (tegra264) keeps the
+    /// rootfs-redundancy path (redundancy is armed at flash there and its
+    /// flow is hardware-validated), and an unknown/unreadable SoC keeps
+    /// that conservative default too. Ports `swap-slot.go`'s
+    /// `bootChainSlotAB`.
+    func bootChainSlotAB() -> Bool {
+        socCompatibleContains(Self.bootChainSlotABSoC)
+    }
+
+    /// Returns the `nvbootctrl` target-type selector for slot operations
+    /// (`get-current-slot`/`set-active-boot-slot`/`mark-boot-successful`):
+    /// none for the boot-chain layer (Orin), `["-t", "rootfs"]` for the
+    /// rootfs-redundancy layer (Thor and the conservative default).
+    /// Returns a fresh array each call so callers can append safely. Ports
+    /// `swap-slot.go`'s `nvbootctrlSlotArgs`.
+    func nvbootctrlSlotArgs() -> [String] {
+        bootChainSlotAB() ? [] : ["-t", "rootfs"]
+    }
+
+    /// Reports whether the device-tree `compatible` property contains
+    /// `token` (e.g. "tegra234", "tegra264"). `compatible` is a
+    /// NUL-separated list of "vendor,soc" strings. Returns `false` when it
+    /// cannot be read, so callers treat an unknown SoC conservatively.
+    /// Ports `swap-slot.go`'s `socCompatibleContains`.
+    func socCompatibleContains(_ token: String) -> Bool {
         guard let raw = try? fileStore.read(rootDir + "/proc/device-tree/compatible") else {
             return false
         }
         let text = String(decoding: raw, as: UTF8.self)
         let nul: Character = "\0"
         return text.split(separator: nul, omittingEmptySubsequences: true)
-            .contains { $0.contains(Self.capsuleEffectiveSoC) }
+            .contains { $0.contains(token) }
     }
 
     /// Records which slot the next boot targets — input for the
@@ -148,9 +198,11 @@ extension TegraUEFI {
         }
     }
 
-    /// `nvbootctrl -t rootfs set-active-boot-slot <n>`.
+    /// `nvbootctrl [-t rootfs] set-active-boot-slot <n>` — the boot-chain
+    /// layer on Orin, the rootfs-redundancy layer elsewhere (see
+    /// `nvbootctrlSlotArgs`).
     func runSetActiveBootSlot(_ s: Slot) throws {
-        let result = commandRunner.run([nvbootctrl, "-t", "rootfs", "set-active-boot-slot", String(s.rawValue)])
+        let result = commandRunner.run([nvbootctrl] + nvbootctrlSlotArgs() + ["set-active-boot-slot", String(s.rawValue)])
         guard result.exitCode == 0 else {
             throw TegraUEFIError.swapCommandFailed(s, Self.decodeCombined(result))
         }
