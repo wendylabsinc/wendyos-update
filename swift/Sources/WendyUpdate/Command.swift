@@ -254,15 +254,60 @@ struct MarkGood: AsyncParsableCommand {
 
 // MARK: - pack (Task 10.3)
 
+/// Ports pack.go's `cmdPack` flag surface verbatim. Every flag here is
+/// declared optional (no `ArgumentParser`-level `required` — required-ness
+/// is instead checked, all at once, by `runPack(_:)`) so a missing flag
+/// produces the same exit-1 `PackError` pack.go's own manual check does,
+/// rather than `ArgumentParser`'s unrelated validation-failure exit code.
+/// This command itself does nothing but gather flags into a
+/// `PackCLIOptions` and hand off to `runPack(_:)` — see `Pack.swift` for
+/// the actual logic (and what a test drives directly, with no argument
+/// parsing involved).
 struct Pack: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "pack",
         abstract: "build a .wendy artifact from a rootfs image (host-side)"
     )
 
+    @Option(name: .long, help: "rootfs image to package (e.g. the deployed .ext4)")
+    var image = ""
+
+    @Option(name: .long, help: "artifact name (e.g. wendyos-image-<machine>-<version>)")
+    var name = ""
+
+    @Option(name: .long, help: "artifact version (e.g. 0.16.0)")
+    var version = ""
+
+    @Option(name: .long, help: "payload compression: zstd|gzip|none")
+    var compression = "zstd"
+
+    @Flag(name: .long, help: "informational flag (the rootfs marker decides at install time)")
+    var bootloaderUpdate = false
+
+    @Option(name: .long, help: "minimum wendyos-update version able to install this artifact")
+    var minToolVersion = ""
+
+    @Option(name: .customShort("o"), help: "output .wendy path")
+    var output = ""
+
+    @Flag(name: .long, help: "skip the read-back verification pass")
+    var noVerify = false
+
+    @Option(name: .customLong("device"), help: "compatible device type (WENDYOS_BOARD_ID); repeatable")
+    var devices: [String] = []
+
     mutating func run() async throws {
-        FileHandle.standardError.write(Data("wendyos-update: pack: not yet implemented (task 10.3)\n".utf8))
-        throw ExitCode(1)
+        bootstrapRuntime()
+        try await runVerb {
+            let summary = try runPack(
+                PackCLIOptions(
+                    image: image, name: name, version: version, compression: compression,
+                    bootloaderUpdate: bootloaderUpdate, minToolVersion: minToolVersion,
+                    output: output, noVerify: noVerify, devices: devices
+                )
+            )
+            FileHandle.standardError.write(Data(summary.utf8))
+        }
     }
 }
 

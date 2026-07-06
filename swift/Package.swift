@@ -96,6 +96,14 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 .product(name: "AsyncHTTPClient", package: "async-http-client"),
                 .product(name: "NIOCore", package: "swift-nio"),
+                // `pack` (Task 10.3): maps the `--compression` flag to
+                // `Zstd.Compression` and streams the self-verify read-back
+                // through `Zstd.DecompressStream`; `Crypto` computes the
+                // rolling SHA-256 that read-back checks against the
+                // manifest — the same pairing `Artifact`/`Engine` already
+                // depend on for the same reason.
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
             ],
             swiftSettings: [.swiftLanguageMode(.v6)],
             linkerSettings: wantsStaticLink

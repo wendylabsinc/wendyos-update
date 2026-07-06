@@ -54,6 +54,20 @@ public enum LinuxSys {
         }
     }
 
+    /// Opens `path` for writing, creating it with mode `0644` if missing
+    /// and truncating it to zero length if it already exists. Ports
+    /// `os.OpenFile(*output, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)`
+    /// from `cmd/wendyos-update/pack.go`'s `cmdPack` — the only caller
+    /// that needs `O_TRUNC`; `openWriteCreate`'s other call sites
+    /// (efivars) intentionally must NOT truncate an existing value.
+    public static func openWriteCreateTruncate(_ path: String) throws -> Int32 {
+        try retrying(op: "open(O_WRONLY|O_CREAT|O_TRUNC)") {
+            path.withCString { cPath in
+                Glibc.open(cPath, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+            }
+        }
+    }
+
     /// Writes `buf` via a single `write(2)` call (retried across
     /// `EINTR`), returning the byte count the syscall reported — which
     /// may be less than `buf.count`.
