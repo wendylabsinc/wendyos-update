@@ -91,6 +91,37 @@ func TestSettleBootChain(t *testing.T) {
 	}
 }
 
+// On the capsule path, SwapSlot must clear a stale pending FW-chain switch
+// BEFORE it stages — otherwise the firmware cancels the capsule with 6163. This
+// asserts the integration (not just settleBootChain in isolation): seed both
+// boot-chain vars, run the capsule path, and confirm they are gone. Staging
+// itself fails here (no real ESP), which is fine — settleBootChain runs first,
+// so the clear must have happened regardless.
+func TestSwapSlotClearsBootChainBeforeStaging(t *testing.T) {
+	c := testController(t)
+	c.Nvbootctrl = recordingNvbootctrl(t, filepath.Join(t.TempDir(), "calls.log"), "0\n")
+	writeOsIndicationsSupported(t, c, true /* capsule advertised → capsule path */)
+	installSwapSetup(t, c, connector.SlotB, true /* marker present */)
+
+	next := filepath.Join(c.EfivarsDir, "BootChainFwNext-"+VendorGUID)
+	status := filepath.Join(c.EfivarsDir, "BootChainFwStatus-"+VendorGUID)
+	for _, p := range []string{next, status} {
+		if err := os.WriteFile(p, []byte{0x07, 0, 0, 0, 0x01, 0, 0, 0}, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Capsule staging cannot complete without a real ESP; the error is expected.
+	// What matters is that settleBootChain ran before that point.
+	_ = c.SwapSlot(connector.SlotB, true)
+
+	for _, p := range []string{next, status} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Fatalf("capsule path left %s present (settleBootChain did not run before staging); stat err = %v", filepath.Base(p), err)
+		}
+	}
+}
+
 // installSwapSetup wires a controller so SwapSlot(_, true) can reach the
 // marker-inspection branch without real block devices: PartitionFor resolves
 // via a by-partlabel symlink under RootDir, and mountFn returns a fake rootfs
@@ -121,6 +152,16 @@ func installSwapSetup(t *testing.T, c *Controller, target connector.Slot, hasMar
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(markerPath, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		// A bootloader marker means the rootfs also ships the capsule; create it
+		// so the capsule path proceeds past the capsule-present check to
+		// settleBootChain + staging (staging then fails without a real ESP).
+		capsulePath := filepath.Join(mountDir, strings.TrimPrefix(CapsuleSrcPath, "/"))
+		if err := os.MkdirAll(filepath.Dir(capsulePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(capsulePath, []byte("fake-capsule"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}

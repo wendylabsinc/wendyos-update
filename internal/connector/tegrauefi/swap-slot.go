@@ -174,9 +174,10 @@ func (c *Controller) capsuleUpdateEffective() bool {
 // TegraFmp.c FmpTegraCheckImage → BootChainDxe.c BootChainCheckAndCancelUpdate
 // cancels if BootChainFwNext OR BootChainFwStatus is present. The firmware
 // deletes BootChainFwNext itself on the cancel but NEVER deletes
-// BootChainFwStatus, so a rolled-back rootfs-only OTA (which set BootChainFwNext
-// via nvbootctrl set-active-boot-slot) leaves BootChainFwStatus set and every
-// later capsule 6163s until it is cleared out-of-band.
+// BootChainFwStatus, so a rolled-back rootfs-only OTA leaves BootChainFwStatus
+// set and every later capsule 6163s until it is cleared out-of-band. (On Orin's
+// linked chains a rootfs-slot switch is what leaves BootChainFwNext behind —
+// device-observed, not confirmed from the closed nvbootctrl source.)
 var bootChainVars = []string{"BootChainFwNext", "BootChainFwStatus"}
 
 // settleBootChain clears any pending FW-chain switch so the capsule is not
@@ -186,7 +187,10 @@ var bootChainVars = []string{"BootChainFwNext", "BootChainFwStatus"}
 // nvbootctrl has no mark-boot-successful there, so efivarfs delete is the only
 // mechanism). Safe here because the engine serializes OTAs: at capsule-stage
 // time a pending switch is a stale, un-committed prior attempt — not a live
-// in-flight update.
+// in-flight update. An out-of-band pending switch (e.g. an operator arming a
+// chain change by hand) would also be cleared, which is acceptable: the firmware
+// would cancel that switch the moment it processed the capsule anyway (same
+// CheckAndCancelUpdate), so no update the capsule wouldn't supersede is lost.
 func (c *Controller) settleBootChain() error {
 	for _, name := range bootChainVars {
 		path := filepath.Join(c.EfivarsDir, name+"-"+VendorGUID)
