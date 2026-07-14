@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "State",
+  "description": "state.json — present only while an update is in flight. See docs/state-schema.md and internal/engine/state.go (Go source of truth for field order and JSON tags). `created` is an RFC 3339 timestamp carried as an opaque string end to end — never parsed into a date type.",
+  "type": "object",
+  "properties": {
+    "schema": { "type": "integer" },
+    "phase": {
+      "type": "string",
+      "enum": ["written", "swapped", "failed"]
+    },
+    "target_slot": { "type": "integer" },
+    "artifact_name": { "type": "string" },
+    "artifact_version": { "type": "string" },
+    "payload_sha256": { "type": "string" },
+    "bootloader_update": { "type": "boolean" },
+    "created": { "type": "string" }
+  },
+  "required": [
+    "schema",
+    "phase",
+    "target_slot",
+    "artifact_name",
+    "artifact_version",
+    "payload_sha256",
+    "bootloader_update",
+    "created"
+  ]
+}
