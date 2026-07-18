@@ -306,17 +306,21 @@ func (c *Controller) MarkGood() error {
 	return nil
 }
 
-// ConfirmBoot implements connector.BootConfirmer: `nvbootctrl -t rootfs
-// mark-boot-successful` tells UEFI this boot succeeded, stopping the rootfs
-// A/B boot-validation watchdog and retry countdown for the running slot.
-// With rootfs redundancy enabled UEFI arms that watchdog on EVERY boot (not
-// just trials) and reboots the SoC minutes into userspace unless something
-// confirms; stock L4T's nv_update_verifier.service did this, and WendyOS
-// does not ship it — so the boot verifier calls this each healthy boot.
+// ConfirmBoot implements connector.BootConfirmer: `nvbootctrl verify` tells
+// UEFI this boot succeeded, stopping the rootfs A/B boot-validation watchdog
+// and retry countdown for the running slot. With rootfs redundancy enabled UEFI
+// arms that watchdog on EVERY boot (not just trials) and reboots the SoC minutes
+// into userspace unless something confirms.
+//
+// `verify` is the command stock L4T's nv_update_verifier.service runs each boot,
+// validated on r36/r38/r39.2. The connector runs the same command so the confirm
+// does not depend on that service being present. The earlier spelling
+// `mark-boot-successful` is the AOSP boot_control name and does NOT exist in
+// L4T's nvbootctrl — it failed with exit 64 every boot, which also made MarkGood
+// (which calls this) fail. `verify` takes no `-t rootfs` selector.
 func (c *Controller) ConfirmBoot() error {
-	args := append(c.nvbootctrlSlotArgs(), "mark-boot-successful")
-	if out, err := runCmd(c.Nvbootctrl, args...); err != nil {
-		return fmt.Errorf("confirm boot: nvbootctrl mark-boot-successful: %w (%s)", err, out)
+	if out, err := runCmd(c.Nvbootctrl, "verify"); err != nil {
+		return fmt.Errorf("confirm boot: nvbootctrl verify: %w (%s)", err, out)
 	}
 	return nil
 }

@@ -48,9 +48,10 @@ func testController(t *testing.T) *Controller {
 }
 
 // ConfirmBoot is the per-boot confirm behind connector.BootConfirmer: it must
-// run `nvbootctrl -t rootfs mark-boot-successful`, which stops UEFI's rootfs
-// A/B boot-validation watchdog and retry countdown for the running slot.
-func TestConfirmBootRunsMarkBootSuccessful(t *testing.T) {
+// run `nvbootctrl verify` (the L4T command stock nv_update_verifier uses, not
+// the nonexistent AOSP `mark-boot-successful`), which stops UEFI's rootfs A/B
+// boot-validation watchdog and retry countdown for the running slot.
+func TestConfirmBootRunsVerify(t *testing.T) {
 	c := testController(t)
 	logPath := filepath.Join(t.TempDir(), "calls.log")
 	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n")
@@ -59,17 +60,19 @@ func TestConfirmBootRunsMarkBootSuccessful(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(logPath)
-	if !strings.Contains(string(data), "-t rootfs mark-boot-successful") {
-		t.Fatalf("ConfirmBoot did not run mark-boot-successful; calls were:\n%s", data)
+	if !strings.Contains(string(data), "verify") {
+		t.Fatalf("ConfirmBoot did not run nvbootctrl verify; calls were:\n%s", data)
+	}
+	if strings.Contains(string(data), "mark-boot-successful") {
+		t.Fatalf("ConfirmBoot ran the nonexistent mark-boot-successful; calls were:\n%s", data)
 	}
 }
 
-// MarkGood must confirm the running slot to the bootloader
-// (nvbootctrl mark-boot-successful) — the trial-boot confirm that stops the
-// firmware retry countdown. WendyOS does not ship NVIDIA's
-// nv_update_verifier.service, so if the tool skips this the firmware A/B
-// fallback never completes: committed slots are never confirmed, and a slot
-// that dies before userspace never triggers the intended fallback.
+// MarkGood must confirm the running slot to the bootloader (nvbootctrl verify)
+// — the trial-boot confirm that stops the firmware retry countdown. If the tool
+// skips this the firmware A/B fallback never completes: committed slots are
+// never confirmed, and a slot that dies before userspace never triggers the
+// intended fallback.
 func TestMarkGoodConfirmsBootToFirmware(t *testing.T) {
 	c := testController(t)
 	logPath := filepath.Join(t.TempDir(), "calls.log")
@@ -80,8 +83,8 @@ func TestMarkGoodConfirmsBootToFirmware(t *testing.T) {
 	}
 
 	data, _ := os.ReadFile(logPath)
-	if !strings.Contains(string(data), "-t rootfs mark-boot-successful") {
-		t.Fatalf("MarkGood did not confirm the boot via nvbootctrl mark-boot-successful; calls were:\n%s", data)
+	if !strings.Contains(string(data), "verify") {
+		t.Fatalf("MarkGood did not confirm the boot via nvbootctrl verify; calls were:\n%s", data)
 	}
 }
 

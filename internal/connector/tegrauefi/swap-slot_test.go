@@ -108,7 +108,11 @@ func TestSwapSlotSwitchesSlotWhenCapsuleIneffective(t *testing.T) {
 	}
 
 	calls, _ := os.ReadFile(logPath)
-	if !strings.Contains(string(calls), "-t rootfs set-active-boot-slot 1") {
+	// Orin (tegra234) drives A/B via the boot chain, so the switch is a plain
+	// `nvbootctrl set-active-boot-slot` with no `-t rootfs` selector (see
+	// bootChainSlotAB / nvbootctrlSlotArgs). What matters here is that the slot
+	// is switched via nvbootctrl at all, not the target-type flag.
+	if !strings.Contains(string(calls), "set-active-boot-slot 1") {
 		t.Fatalf("expected nvbootctrl slot switch to B; calls were:\n%s", calls)
 	}
 	// OsIndications must not be armed (no capsule to process).

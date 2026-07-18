@@ -282,8 +282,14 @@ func (c *Controller) espMountpoint() (string, error) {
 	return "", fmt.Errorf("ESP not mounted at /boot/efi and no by-partlabel match (%v)", espPartlabels)
 }
 
-// copyFileSync copies src to dst and fsyncs dst (the capsule must be
-// durable before OsIndications is armed).
+// copyFileSync copies src to dst and makes it durable before OsIndications is
+// armed: it fsyncs the file AND syncs the whole destination filesystem. The
+// filesystem sync matters — the ESP is vfat, where fsync of the file does not
+// guarantee its new directory entry reaches disk, and the agent reboots via
+// LINUX_REBOOT_CMD_RESTART with no unmount/sync. Without the syncfs the staged
+// capsule can be invisible to UEFI on the next boot (nvbootctrl capsule status
+// stays 0/none), so the boot chain and coupled rootfs slot never switch and the
+// update rolls back. Mirrors the ubootenv connector's post-write sync.
 func copyFileSync(src, dst string) error {
 	data, err := os.ReadFile(src) // capsules are tens of MB; fine to buffer
 	if err != nil {
@@ -298,6 +304,10 @@ func copyFileSync(src, dst string) error {
 		return err
 	}
 	if err := f.Sync(); err != nil {
+		f.Close()
+		return err
+	}
+	if err := unix.Syncfs(int(f.Fd())); err != nil {
 		f.Close()
 		return err
 	}
