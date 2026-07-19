@@ -25,11 +25,11 @@ func writeCompatible(t *testing.T, c *Controller, entries ...string) {
 }
 
 // capsuleUpdateEffective gates the bootloader-capsule path: UEFI
-// capsule-on-disk is only honored on platforms where it has been validated
-// (Thor / tegra264). On Orin (tegra234) and unknown SoCs the firmware silently
-// ignores a staged capsule, so the connector must fall back to the reliable
-// nvbootctrl slot switch instead of betting the whole update on a capsule that
-// never gets processed.
+// capsule-on-disk is only taken on platforms where it has been validated to be
+// processed by the firmware — Thor (tegra264) and Orin (tegra234). On an
+// unknown SoC the connector must fall back to the reliable nvbootctrl slot
+// switch instead of betting the whole update on a capsule that may never get
+// processed.
 func TestCapsuleUpdateEffective(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -38,8 +38,8 @@ func TestCapsuleUpdateEffective(t *testing.T) {
 		want     bool
 	}{
 		{"thor tegra264 is effective", []string{"nvidia,p3834-0008", "nvidia,tegra264"}, true, true},
-		{"orin tegra234 is not effective", []string{"nvidia,p3701-0000", "nvidia,tegra234"}, true, false},
-		{"orin nano tegra234 is not effective", []string{"nvidia,p3767-0000", "nvidia,tegra234"}, true, false},
+		{"orin tegra234 is effective", []string{"nvidia,p3701-0000", "nvidia,tegra234"}, true, true},
+		{"orin nano tegra234 is effective", []string{"nvidia,p3767-0000", "nvidia,tegra234"}, true, true},
 		{"missing compatible defaults to not effective", nil, false, false},
 		{"unknown soc defaults to not effective", []string{"nvidia,someboard", "nvidia,tegra999"}, true, false},
 	} {
@@ -91,16 +91,16 @@ func installSwapSetup(t *testing.T, c *Controller, target connector.Slot, hasMar
 	c.mountFn = func(string) (string, func(), error) { return mountDir, func() {}, nil }
 }
 
-// On a platform where capsule-on-disk is NOT effective (Orin), an install swap
-// for an image that carries the bootloader marker must still switch the active
-// slot via nvbootctrl — otherwise the update silently no-ops (the slot never
-// moves, the device reboots into the same OS). It must NOT stage a capsule or
-// arm OsIndications on this platform.
+// On a platform where capsule-on-disk is NOT effective (an unknown SoC), an
+// install swap for an image that carries the bootloader marker must still
+// switch the active slot via nvbootctrl — otherwise the update silently no-ops
+// (the slot never moves, the device reboots into the same OS). It must NOT
+// stage a capsule or arm OsIndications on this platform.
 func TestSwapSlotSwitchesSlotWhenCapsuleIneffective(t *testing.T) {
 	c := testController(t)
 	logPath := filepath.Join(t.TempDir(), "calls.log")
 	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n") // running slot A
-	writeCompatible(t, c, "nvidia,p3701-0000", "nvidia,tegra234")
+	writeCompatible(t, c, "nvidia,someboard", "nvidia,tegra999")
 	installSwapSetup(t, c, connector.SlotB, true /* marker present */)
 
 	if err := c.SwapSlot(connector.SlotB, true); err != nil {
@@ -108,10 +108,10 @@ func TestSwapSlotSwitchesSlotWhenCapsuleIneffective(t *testing.T) {
 	}
 
 	calls, _ := os.ReadFile(logPath)
-	// Orin (tegra234) drives A/B via the boot chain, so the switch is a plain
-	// `nvbootctrl set-active-boot-slot` with no `-t rootfs` selector (see
-	// bootChainSlotAB / nvbootctrlSlotArgs). What matters here is that the slot
-	// is switched via nvbootctrl at all, not the target-type flag.
+	// An unknown SoC keeps the conservative rootfs-redundancy layer, so the
+	// switch is `nvbootctrl -t rootfs set-active-boot-slot 1`. What matters here
+	// is that the slot is switched via nvbootctrl at all, not the target-type
+	// flag.
 	if !strings.Contains(string(calls), "set-active-boot-slot 1") {
 		t.Fatalf("expected nvbootctrl slot switch to B; calls were:\n%s", calls)
 	}

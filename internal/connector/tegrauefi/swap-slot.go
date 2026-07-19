@@ -76,13 +76,14 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	hasMarker := markerErr == nil
 
 	// The capsule path (below) delegates the ENTIRE slot switch to UEFI
-	// processing the capsule at reboot — no nvbootctrl call. That only works
-	// where capsule-on-disk is actually honored (Thor). On Orin and unknown
-	// SoCs the firmware silently ignores a correctly-staged capsule, so the
-	// slot never moves and the update no-ops (reboots into the same OS). Fall
-	// back to the reliable nvbootctrl slot switch there: the new rootfs boots
-	// on the existing bootloader (validated by manual set-active-boot-slot),
-	// only the bootloader is left un-updated. See capsuleUpdateEffective.
+	// processing the capsule at reboot — no nvbootctrl call. That works where
+	// capsule-on-disk is validated to be honored: Thor (t264) and Orin (t234).
+	// On an unknown or unreadable SoC the firmware may silently ignore a
+	// correctly-staged capsule, so the slot would never move and the update
+	// would no-op (reboots into the same OS). Fall back to the reliable
+	// nvbootctrl slot switch there: the new rootfs boots on the existing
+	// bootloader (validated by manual set-active-boot-slot), only the
+	// bootloader is left un-updated. See capsuleUpdateEffective.
 	if !hasMarker || !c.capsuleUpdateEffective() {
 		if hasMarker {
 			slog.Warn("swap: image requests a bootloader update but UEFI capsule-on-disk is not effective on this platform; applying rootfs-only slot switch — the bootloader will NOT be updated",
@@ -141,26 +142,40 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	return nil
 }
 
-// capsuleEffectiveSoC is the device-tree compatible token for the only
-// platform where UEFI capsule-on-disk bootloader updates are validated to be
-// processed by the firmware: NVIDIA Jetson AGX Thor (t264).
-const capsuleEffectiveSoC = "tegra264"
+// capsuleEffectiveSoCs are the device-tree compatible tokens for the platforms
+// where UEFI capsule-on-disk bootloader updates are validated to be processed
+// by the firmware: NVIDIA Jetson AGX Thor (t264) and AGX Orin / Orin Nano
+// (t234).
+var capsuleEffectiveSoCs = []string{"tegra264", "tegra234"}
 
 // capsuleUpdateEffective reports whether staging a UEFI capsule-on-disk update
 // (capsule on the ESP + OsIndications bit, no nvbootctrl call) will actually
 // be honored by this platform's firmware.
 //
-// This is an allowlist, not a capability probe, and deliberately so: the UEFI
-// OsIndicationsSupported variable advertises FILE_CAPSULE_DELIVERY on Orin
-// (tegra234) too, yet the firmware never processes a correctly-staged capsule
-// there — observed fleet-wide on AGX Orin and Orin Nano (r39.2): ESRT stays 0,
-// the boot chain never switches, and the whole update silently no-ops. Only
-// Thor (tegra264) is validated to process the capsule. Everything else — Orin
-// and any unknown or unreadable SoC — is treated as ineffective so SwapSlot
-// falls back to the reliable nvbootctrl slot switch, trading the bootloader
-// update for an update that actually applies.
+// This is an allowlist, not a capability probe: the UEFI OsIndicationsSupported
+// variable advertises FILE_CAPSULE_DELIVERY on SoCs that do not act on it, so a
+// probe would false-positive. Both listed SoCs are validated on r39.2:
+//   - Thor (tegra264): hardware-validated since r38.
+//   - Orin (tegra234): proven on-device 2026-07-05 (AGX Orin Nano r39.2) — the
+//     firmware consumed the staged .Cap, flipped the bootloader slot, and the
+//     coupled boot chain (hence the rootfs slot) followed. See bootChainSlotAB.
+//
+// The earlier "Orin silently ignores capsules" observation (which gated this to
+// Thor only) was a mis-attribution of the un-synced-ESP bug: the capsule's vfat
+// directory entry was not flushed before the agent's sync-less reboot, so UEFI
+// found no capsule (ESRT stayed 0, the slot never moved) — the same symptom on
+// Thor and Orin alike. copyFileSync now syncfs'es the ESP, so the capsule
+// survives the reboot. An unknown or unreadable SoC is still treated as
+// ineffective (SwapSlot falls back to the nvbootctrl slot switch), because
+// capsule processing there is unproven.
 func (c *Controller) capsuleUpdateEffective() bool {
-	return c.socCompatibleContains(capsuleEffectiveSoC)
+	for _, soc := range capsuleEffectiveSoCs {
+		if c.socCompatibleContains(soc) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // bootChainSlotABSoC is the device-tree compatible token for Orin (t234), the
