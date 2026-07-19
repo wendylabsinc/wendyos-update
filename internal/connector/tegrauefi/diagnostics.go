@@ -199,23 +199,65 @@ func (c *Controller) rootfsSlotInfo() map[int]rootfsSlot {
 }
 
 // SystemStatus reports system-wide (not per-slot) detail: the bootloader
-// version and the last capsule (ESRT) outcome.
+// version and the last capsule outcome.
 func (c *Controller) SystemStatus() []connector.KV {
 	var kv []connector.KV
 	blInfo, _ := runCmd(c.Nvbootctrl, "dump-slots-info")
+	var capsuleStatus string
+	haveVersion := false
 	for _, line := range strings.Split(blInfo, "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "Current version:"); ok {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "Current version:"); ok && !haveVersion {
 			kv = append(kv, connector.KV{Key: "bootloader version", Value: strings.TrimSpace(v)})
-			break
+			haveVersion = true
+			continue
+		}
+		if v, ok := strings.CutPrefix(line, "Capsule update status:"); ok && capsuleStatus == "" {
+			capsuleStatus = strings.TrimSpace(v)
 		}
 	}
+
+	// Prefer nvbootctrl's capsule status: it is unambiguous (0=none, 1=success,
+	// 2=boot-failed, 3=install-failed). The ESRT last_attempt_status alone is
+	// NOT — 0 there means BOTH "success" AND "no capsule ever attempted", so the
+	// old code reported "0 (success)" even when nothing ran. Only when
+	// nvbootctrl omits the field (older L4T) do we fall back to ESRT, and then
+	// we disambiguate 0 with last_attempt_version (0/absent => no attempt).
+	if capsuleStatus != "" {
+		kv = append(kv, connector.KV{Key: "capsule update status", Value: capsuleStatusLabel(capsuleStatus)})
+		return kv
+	}
+
 	esrtDir := filepath.Dir(c.RootDir + ESRTStatusPath)
 	if b, err := os.ReadFile(filepath.Join(esrtDir, "last_attempt_status")); err == nil {
 		s := strings.TrimSpace(string(b))
 		if s == "0" {
-			s = "0 (success)"
+			ver, _ := os.ReadFile(filepath.Join(esrtDir, "last_attempt_version"))
+			if v := strings.TrimSpace(string(ver)); v == "" || v == "0" {
+				s = "0 (no update attempted)"
+			} else {
+				s = "0 (success)"
+			}
 		}
 		kv = append(kv, connector.KV{Key: "last capsule status", Value: s})
 	}
+
 	return kv
+}
+
+// capsuleStatusLabel annotates nvbootctrl's "Capsule update status" value with
+// its meaning (0=none, 1=success, 2=boot-failed, 3=install-failed).
+func capsuleStatusLabel(s string) string {
+	switch s {
+	case "0":
+		return "0 (none)"
+	case "1":
+		return "1 (success)"
+	case "2":
+		return "2 (boot failed)"
+	case "3":
+		return "3 (install failed)"
+	default:
+		return s
+	}
 }
