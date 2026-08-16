@@ -1,0 +1,15 @@
+{
+  "format_version": 1,
+  "artifact_name": "wendyos-image-jetson-agx-thor-devkit-nvme-wendyos-0.16.0",
+  "artifact_version": "0.16.0",
+  "compatible_devices": ["jetson-agx-thor"],
+  "payload": {
+    "name": "wendyos-image.ext4.zst",
+    "size": 0,
+    "sha256": "<hex digest of the UNCOMPRESSED image>",
+    "compressed_sha256": "<hex digest of the tar member as stored>",
+    "compression": "zstd"
+  },
+  "bootloader_update": false,
+  "min_tool_version": "0.1.0"
+}

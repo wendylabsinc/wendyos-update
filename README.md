@@ -40,3 +40,20 @@ Phase 2 (skeleton + tegra-uefi backend) in progress. The backend is a
 direct port of the three hardware-validated meta-edgeos state scripts;
 every platform primitive it uses was validated on t264/r38 (2026-06-07)
 and t234/r36 (production Mender stack).
+
+## Swift rewrite (in progress)
+
+`swift/` holds a full-parity Swift 6.3 port of this tool, additive to the
+Go tree above (nothing under `cmd/`/`internal/` is touched by it). It
+targets a statically linked (musl) binary via the Static Linux SDK, built
+as `swift build --swift-sdk aarch64-swift-linux-musl -c release`.
+
+- Design: `docs/superpowers/specs/2026-07-05-wendyos-update-swift-rewrite-design.md`
+- Plan: `docs/superpowers/plans/2026-07-05-wendyos-update-swift-rewrite.md`
+- Build/dev docs: `docs/swift-build.md`
+- File-by-file Go→Swift map + parity checklist: `docs/go-to-swift-map.md`
+
+**The Go tree remains authoritative** until the Swift port has been
+validated on real Jetson/Raspberry Pi hardware — everything in `swift/`
+today is verified only by host unit/E2E tests with fakes at the platform
+seam, never against a live device.

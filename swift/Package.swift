@@ -1,0 +1,288 @@
+// swift-tools-version:6.1
+import PackageDescription
+import Foundation
+
+// Set WOS_STATIC_LINK=1 to pass `-static-stdlib -static-executable` into a
+// `-c release` build so the produced binary has no shared Swift-runtime
+// (or libc) dependency at deploy time.
+//
+// This is meaningful only when combined with the Static Linux SDK cross
+// build documented in docs/swift-build.md:
+//
+//   swift build --swift-sdk aarch64-swift-linux-musl -c release
+//
+// which already links fully statically by default — WOS_STATIC_LINK just
+// makes that intent explicit and pins it down if the SDK's own default
+// ever changes. Do NOT set WOS_STATIC_LINK for a plain native (glibc)
+// release build: the base `swiftlang/swift` toolchain image does not ship
+// static ICU archives compatible with Foundation's static-stdlib mode, so
+// the link step fails with `undefined reference to swift_unumf_*` (and
+// similar) errors. Left unset (the default), `swift test` and a plain
+// `swift build -c release` are unaffected.
+let wantsStaticLink = ProcessInfo.processInfo.environment["WOS_STATIC_LINK"] != nil
+
+let package = Package(
+    name: "wendyos-update",
+    products: [
+        .executable(name: "wendyos-update", targets: ["WendyUpdate"])
+    ],
+    dependencies: [
+        // Pinned to an exact beta tag (rather than a `from:`/`upToNextMinor`
+        // range) because SwiftPM version ranges don't reliably resolve
+        // pre-release tags — `exact:` sidesteps that entirely and pins
+        // PlatformIO's `RealCommandRunner` to the API this was built
+        // against.
+        .package(url: "https://github.com/swiftlang/swift-subprocess.git", exact: "1.0.0-beta.1"),
+        // swift-subprocess's own `Executable`/`Environment` APIs take a
+        // `FilePath` from this package's `SystemPackage` product (it
+        // re-exports Apple's toolchain-provided `System` module where that
+        // exists, and provides its own implementation where it doesn't) —
+        // depended on directly here so PlatformIO can construct `FilePath`
+        // values without guessing which module the toolchain provides.
+        .package(url: "https://github.com/apple/swift-system.git", from: "1.5.0"),
+        // JSON decode/encode for the Model target. IkigaJSON's `JSONObject`
+        // is used directly (order-preserving parse + ordered-insertion
+        // encode) instead of Foundation's Codable/JSONDecoder/JSONEncoder —
+        // see swift/Sources/Model/Model.swift for why.
+        .package(url: "https://github.com/orlandos-nl/swift-json.git", from: "2.5.0"),
+        // ustar-format tar streaming reader/writer for `.wendy` artifacts —
+        // used by the Artifact target's reader (Task 3.2) to walk the
+        // manifest.json/payload members without buffering the whole
+        // archive.
+        .package(path: "Packages/Tar"),
+        // SHA-256 for the Artifact target's reader: tees the (still
+        // compressed) payload bytes through an incremental digest and
+        // verifies it against `manifest.payload.compressed_sha256`.
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "3.0.0"),
+        // zstd/gzip streaming (de)compression for the Artifact target's
+        // writer (Task 3.4): compresses a rootfs image into the `.wendy`
+        // payload member. zstd is vendored into CZstd (compiled from
+        // source, no system libzstd needed); zlib1g-dev (for zlib.h) is
+        // still installed in the wos-swift image.
+        .package(path: "Packages/Zstd"),
+        // Structured logging for the Engine target's lifecycle-hooks runner
+        // (Task 6.2) — mirrors hooks.go's slog usage. The log handler is
+        // bootstrapped later, by the executable (Task 7.1); this package
+        // only supplies the `Logger` API used to emit through it.
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.5.0"),
+        // `WendyLog` — Task 7.1's stderr log-rendering (journal/tty/plain
+        // modes) + progress-bar package. The `WendyUpdate` executable
+        // (Task 10.1) bootstraps `swift-log`'s `LoggingSystem` with the
+        // handler this package builds.
+        .package(path: "Packages/WendyLog"),
+        // Verb dispatch for the `wendyos-update` executable (Task 10.1):
+        // `install`/`commit`/`rollback`/`switch`/`status`/`mark-good`/
+        // `pack`/`verify-boot`/`version`, ported from `cmd/wendyos-update/
+        // main.go`'s `switch os.Args[1]`.
+        .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.3.0"),
+        // `install <url>`'s HTTP(S) streaming download (Task 10.2):
+        // async-http-client for the request/response, swift-nio for the
+        // response body's `ByteBuffer` async sequence and (in tests) an
+        // in-process HTTP/1.1 fixture server. Proven to link fully static
+        // against musl in a prior spike (async-http-client + NIOSSL built
+        // fully static) — no `curl`-`CommandRunner` fallback is needed.
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.20.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.65.0"),
+    ],
+    targets: [
+        .executableTarget(
+            name: "WendyUpdate",
+            dependencies: [
+                "Engine", "Connector", "TegraUEFI", "UBootEnv", "Model", "PlatformIO",
+                "CLIError", "Artifact", "BlockDev", "LinuxSys",
+                .product(name: "WendyLog", package: "WendyLog"),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "IkigaJSON", package: "swift-json"),
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                // `pack` (Task 10.3): maps the `--compression` flag to
+                // `Zstd.Compression` and streams the self-verify read-back
+                // through `Zstd.DecompressStream`; `Crypto` computes the
+                // rolling SHA-256 that read-back checks against the
+                // manifest — the same pairing `Artifact`/`Engine` already
+                // depend on for the same reason.
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)],
+            linkerSettings: wantsStaticLink
+                ? [
+                    .unsafeFlags(
+                        ["-static-stdlib", "-static-executable"],
+                        .when(platforms: [.linux], configuration: .release)
+                    )
+                ]
+                : []
+        ),
+        .testTarget(
+            name: "WendyUpdateTests",
+            dependencies: [
+                "WendyUpdate", "Engine", "Connector", "Model", "PlatformIO", "PlatformIOTesting",
+                "CLIError", "Artifact", "BlockDev",
+                .product(name: "WendyLog", package: "WendyLog"),
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                // In-process HTTP/1.1 fixture server for the `install <url>`
+                // integration tests (Task 10.2) — a real (if tiny) SwiftNIO
+                // server on 127.0.0.1, not a mock of AsyncHTTPClient.
+                .product(name: "NIOPosix", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .systemLibrary(
+            name: "CLinuxSys"
+        ),
+        .target(
+            name: "LinuxSys",
+            dependencies: ["CLinuxSys"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "LinuxSysTests",
+            dependencies: ["LinuxSys"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "PlatformIO",
+            dependencies: [
+                "LinuxSys",
+                .product(name: "Subprocess", package: "swift-subprocess"),
+                .product(name: "SystemPackage", package: "swift-system"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "PlatformIOTesting",
+            dependencies: [
+                "PlatformIO",
+                // `FakeConnector` (Task 11.1) lives here rather than in a
+                // single test target's file so both `EngineTests` and
+                // `E2ETests` can share the exact same `Connector` call-log
+                // test double without duplicating it.
+                "Connector",
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "PlatformIOTests",
+            dependencies: ["PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "Model",
+            dependencies: [
+                .product(name: "IkigaJSON", package: "swift-json")
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "ModelTests",
+            dependencies: ["Model"],
+            resources: [.copy("Fixtures")],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "CLIError",
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "Artifact",
+            dependencies: [
+                "Model", "CLIError", "LinuxSys",
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "ArtifactTests",
+            dependencies: ["Artifact"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "BlockDev",
+            dependencies: [
+                "PlatformIO", "LinuxSys", "CLIError",
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "BlockDevTests",
+            dependencies: ["BlockDev", "PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "Connector",
+            dependencies: ["CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "ConnectorTests",
+            dependencies: ["Connector"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "TegraUEFI",
+            dependencies: ["Connector", "PlatformIO", "LinuxSys", "CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "TegraUEFITests",
+            dependencies: ["TegraUEFI", "PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "UBootEnv",
+            dependencies: ["Connector", "PlatformIO", "CLIError"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "UBootEnvTests",
+            dependencies: ["UBootEnv", "PlatformIO", "PlatformIOTesting"],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .target(
+            name: "Engine",
+            dependencies: [
+                "Connector", "Model", "PlatformIO", "CLIError", "Artifact", "BlockDev",
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Zstd", package: "Zstd"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        .testTarget(
+            name: "EngineTests",
+            dependencies: [
+                "Engine", "Model", "PlatformIO", "PlatformIOTesting", "Connector", "Artifact", "BlockDev",
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+        // End-to-end lifecycle coverage (Task 11.1): drives the real
+        // `Engine` (install -> commit, and install -> fallback -> rollback)
+        // over a `.wendy` built with `ArtifactWriter.pack`, with fakes only
+        // at the platform seam (`FakeConnector`/`FakeFileStore`/
+        // `FakeBlockTarget`, all from `PlatformIOTesting`) — as opposed to
+        // `EngineTests`, which exercises each verb's internal branches in
+        // isolation.
+        .testTarget(
+            name: "E2ETests",
+            dependencies: [
+                "Engine", "Artifact", "BlockDev", "Connector", "Model", "PlatformIO", "PlatformIOTesting",
+                .product(name: "Tar", package: "Tar"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Zstd", package: "Zstd"),
+            ],
+            swiftSettings: [.swiftLanguageMode(.v6)]
+        ),
+    ]
+)

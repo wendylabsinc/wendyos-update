@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "phase": "swapped",
+  "target_slot": 1,
+  "artifact_name": "wendyos-image-jetson-agx-thor-devkit-nvme-wendyos-0.16.0",
+  "artifact_version": "0.16.0",
+  "payload_sha256": "<hex>",
+  "bootloader_update": false,
+  "created": "2026-06-07T12:00:00Z"
+}

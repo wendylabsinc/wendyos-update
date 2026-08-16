@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "InstalledHistory",
+  "description": "installed.json — committed artifact history, capped at 10 entries by the engine. See docs/state-schema.md and internal/engine/state.go (Go source of truth for field order and JSON tags). `committed` is an RFC 3339 timestamp carried as an opaque string, like State.created.",
+  "type": "object",
+  "properties": {
+    "history": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/InstalledEntry" }
+    }
+  },
+  "required": ["history"],
+  "$defs": {
+    "InstalledEntry": {
+      "title": "InstalledEntry",
+      "type": "object",
+      "properties": {
+        "artifact_name": { "type": "string" },
+        "artifact_version": { "type": "string" },
+        "committed": { "type": "string" },
+        "slot": { "type": "integer" }
+      },
+      "required": ["artifact_name", "artifact_version", "committed", "slot"]
+    }
+  }
+}
