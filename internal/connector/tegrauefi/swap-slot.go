@@ -305,28 +305,62 @@ func (c *Controller) espMountpoint() (string, error) {
 // capsule can be invisible to UEFI on the next boot (nvbootctrl capsule status
 // stays 0/none), so the boot chain and coupled rootfs slot never switch and the
 // update rolls back. Mirrors the ubootenv connector's post-write sync.
+//
+// The write goes to a temp file in the same directory and is renamed into
+// place. Writing dst directly with O_TRUNC destroyed the previously staged
+// capsule before the new bytes landed, so a short write — ENOSPC on a full ESP
+// is the realistic one — left a truncated stub and took the last good capsule
+// with it. With temp-and-rename a failed write leaves the existing capsule
+// untouched, and dst is never observed half-written.
+//
+// The cost is that both capsules briefly occupy the ESP, so peak demand is
+// twice the capsule size rather than once. That is comfortable on every
+// current layout (t264 21 MiB of 511 free, t234 22 MiB of 63) and it is what
+// the ESP free-space preflight sizes against.
 func copyFileSync(src, dst string) error {
 	data, err := os.ReadFile(src) // capsules are tens of MB; fine to buffer
 	if err != nil {
 		return err
 	}
-	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+
+	tmp := dst + ".tmp"
+	// A leftover temp from an earlier interrupted staging would otherwise make
+	// O_EXCL fail; it is ours to reclaim, and its space is needed.
+	_ = os.Remove(tmp)
+
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
 	if err != nil {
 		return err
 	}
 	if _, err := f.Write(data); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
+		os.Remove(tmp)
 		return err
 	}
-	if err := unix.Syncfs(int(f.Fd())); err != nil {
-		f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
-	return f.Close()
+	if err := os.Rename(tmp, dst); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+
+	// syncfs after the rename so the directory entry is durable too — on vfat
+	// fsync of the file does not cover it, and the agent reboots without an
+	// unmount. Opened on the directory to avoid reopening the capsule.
+	d, err := os.Open(filepath.Dir(dst))
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+
+	return unix.Syncfs(int(d.Fd()))
 }
 
 // --- mount seams (real implementations; tests substitute mountFn) ---

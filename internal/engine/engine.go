@@ -243,6 +243,35 @@ type StatusInfo struct {
 	Diagnostics map[string]string `json:"diagnostics,omitempty"` // verbose raw dump only
 }
 
+// Check reports whether this device could take an install right now, without
+// an artifact and without changing anything. It answers the question the
+// `check` verb asks; the caller decides the exit code from OK.
+//
+// The artifact is deliberately not a parameter. Nothing an artifact carries
+// improves this answer: device compatibility, minimum tool version and payload
+// size are all in the manifest, and install already rejects on them after
+// reading only the first tar member, long before the expensive part. The one
+// thing that would help — the size of the capsule the new image ships — lives
+// inside the payload, not the manifest, so it is unknowable until the slot has
+// been written.
+func (e *Engine) Check() []connector.Check {
+	checks := []connector.Check{{Name: "no update pending", OK: true}}
+	switch st, err := e.LoadState(); {
+	case err != nil:
+		checks[0].OK = false
+		checks[0].Detail = fmt.Sprintf("cannot read update state: %v", err)
+	case st != nil:
+		checks[0].OK = false
+		checks[0].Detail = fmt.Sprintf("%s is pending in phase %q for slot %s; commit, roll back, or mark-good first",
+			st.ArtifactName, st.Phase, connector.Slot(st.TargetSlot))
+	}
+
+	if rc, ok := e.Conn.(connector.ReadinessChecker); ok {
+		checks = append(checks, rc.CheckReadiness()...)
+	}
+	return checks
+}
+
 func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
 	cur, err := e.Conn.CurrentSlot()
 	if err != nil {

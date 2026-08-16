@@ -30,6 +30,7 @@ import (
 	"strings"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -361,6 +362,22 @@ func (c *Controller) rootfsRedundancyArmed() (bool, error) {
 // actionable message instead of downloading, writing, rebooting, then rolling
 // back.
 func (c *Controller) PreflightInstall() error {
+	// Advisory: a full ESP does not stop the install, but it does decide it
+	// long before anyone finds out, so say so now rather than after 16 GB.
+	// `wendyos-update check` reports the same condition as a failure.
+	if err := c.espCapsuleHeadroom(); err != nil {
+		slog.Warn("preflight: " + err.Error())
+	}
+
+	return c.rootfsRedundancyReady()
+}
+
+// rootfsRedundancyReady reports whether a rootfs slot switch can take effect.
+// Split out of PreflightInstall so `check` can ask the same question without
+// the install-time side effects — calling PreflightInstall from there logged a
+// "preflight:" warning during a read-only check, and printed the ESP shortfall
+// a second time.
+func (c *Controller) rootfsRedundancyReady() error {
 	// Boot-chain A/B (Orin) does not use RootfsRedundancyLevel at all — the
 	// chain switch moves the coupled rootfs slot without it — so there is
 	// nothing to arm and nothing to preflight. (The var is unarmable from the
@@ -385,6 +402,82 @@ func (c *Controller) PreflightInstall() error {
 			"--dual) and reboot, then retry the update", "RootfsRedundancyLevel")
 	}
 	return nil
+}
+
+// espHeadroomMargin covers FAT cluster rounding on the capsule plus a cluster
+// for the EFI/UpdateCapsule directory. Both are kilobytes at the 4 KiB clusters
+// a 512 MiB ESP uses, so this is generous on purpose — the point is to catch a
+// full ESP, not to police the last few blocks.
+const espHeadroomMargin = 1 << 20
+
+// espCapsuleHeadroom reports whether the ESP has room to stage a bootloader
+// capsule. Staging is the very last step of an install, so running out there
+// costs the whole transfer and the rootfs slot write — measured at 3.6 GB and
+// 12 GiB — before anything says a word.
+//
+// It cannot read the incoming image: the target rootfs is not written yet, and
+// the capsule lives inside that payload rather than in the manifest. So it
+// sizes against the RUNNING rootfs, which is a proxy — same-lineage images
+// carry the same marker policy and a same-BSP capsule of the same order of
+// size. Good enough to report, not certain enough to block on, which is why
+// PreflightInstall only warns while `check` treats it as a failure.
+//
+// The requirement is one whole capsule of free space, not the difference
+// against what is already staged: copyFileSync writes a temp file and renames,
+// so the old capsule still holds its clusters while the new one is written.
+//
+// Every probe is best-effort. Anything unreadable returns nil — an unknown
+// state must never be the reason an install does not start.
+func (c *Controller) espCapsuleHeadroom() error {
+	if !c.capsuleUpdateEffective() {
+		return nil
+	}
+	if _, err := os.Stat(c.RootDir + MarkerPath); err != nil {
+		return nil // this image does not request a bootloader update
+	}
+	fi, err := os.Stat(c.RootDir + CapsuleSrcPath)
+	if err != nil {
+		return nil
+	}
+	need := fi.Size() + espHeadroomMargin
+
+	espDir, err := c.espMountpoint()
+	if err != nil {
+		return nil
+	}
+	var st unix.Statfs_t
+	if err := unix.Statfs(espDir, &st); err != nil {
+		return nil
+	}
+	if free := int64(st.Bavail) * st.Bsize; free < need {
+		return fmt.Errorf("the ESP (%s) has %d bytes free but staging the bootloader "+
+			"capsule needs %d (capsule %d + margin): the install would run to completion "+
+			"and then fail at the last step. Free space on the ESP, or reflash to pick up "+
+			"a larger one", espDir, free, need, fi.Size())
+	}
+	return nil
+}
+
+// CheckReadiness implements connector.ReadinessChecker: the tegra conditions
+// that decide whether an install can succeed, reported rather than enforced.
+func (c *Controller) CheckReadiness() []connector.Check {
+	checks := []connector.Check{{Name: "rootfs A/B redundancy", OK: true}}
+	if err := c.rootfsRedundancyReady(); err != nil {
+		checks[0].OK, checks[0].Detail = false, err.Error()
+	} else if c.bootChainSlotAB() {
+		checks[0].Detail = "not applicable: boot-chain A/B moves the rootfs slot"
+	} else {
+		checks[0].Detail = "armed"
+	}
+
+	esp := connector.Check{Name: "ESP capsule headroom", OK: true}
+	if err := c.espCapsuleHeadroom(); err != nil {
+		esp.OK, esp.Detail = false, err.Error()
+	} else if !c.capsuleUpdateEffective() {
+		esp.Detail = "not applicable: this SoC does not stage capsules"
+	}
+
+	return append(checks, esp)
 }
 
 // BootIsCompromised, VerifyPlatformUpdate, AbortPlatformUpdate live in

@@ -140,6 +140,26 @@ type InstallPreflighter interface {
 	PreflightInstall() error
 }
 
+// Check is one readiness finding reported by `wendyos-update check`.
+type Check struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Detail string `json:"detail,omitempty"` // why it failed, or context when it passed
+}
+
+// ReadinessChecker is implemented by connectors that can report whether the
+// device is in a state where an install would succeed, without an artifact and
+// without changing anything.
+//
+// This is the same ground PreflightInstall covers, reported rather than
+// enforced, plus the conditions install only warns about. `check` is where a
+// full ESP is a failure: install must not refuse over it, because the check
+// sizes against the running rootfs rather than the incoming image, but an
+// operator asking "can this device take an update" deserves a straight no.
+type ReadinessChecker interface {
+	CheckReadiness() []Check
+}
+
 // SlotStatus is display-only per-slot health from the connector. Empty
 // fields are omitted by the `status` formatter.
 type SlotStatus struct {

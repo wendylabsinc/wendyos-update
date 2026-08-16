@@ -12,6 +12,7 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 | `rollback` | Explicit flip-back of an uncommitted update | No |
 | `switch <other\|a\|b>` | Make the other slot active for the next boot **without** an update — a permanent re-point (not a trial). Refuses while an update is pending, or when already on the target slot. The target must hold a bootable system. | **No** — caller reboots |
 | `status [--json] [--verbose]` | Per-slot state for **both** A/B — rootfs device + health, distro and kernel version, trial retries/notes — plus a system-wide section (bootloader version, last capsule status) and any pending update. `--verbose` adds a raw board `diagnostics` map for debugging (raw `RootfsStatusSlot` bytes, per-slot bootloader state, `BootChainFw*`, `OsIndications`). Inactive-slot distro/kernel are read via a best-effort read-only mount (root only; `unknown` otherwise). Best-effort/display-only. | No |
+| `check [--json]` | Report whether this device could take an install right now: no update pending, plus the platform conditions that decide whether a slot switch can take effect (tegra: rootfs A/B redundancy armed, and ESP room to stage a capsule). Reads state and probes hardware, changes nothing, safe to run at any time. Takes **no artifact** — everything an artifact carries is already rejected by `install` after reading only the manifest, and the one thing that would help, the size of the capsule the incoming image ships, lives inside the payload rather than the manifest. Exit 5 when not ready. | No |
 | `mark-good` | Manual escape hatch: reset slot health vars, clear pending state | No |
 | `pack <flags>` | Host-side: build a `.wendy` artifact from a rootfs image (`--image --name --version --device... -o`); self-verifies by re-reading the output unless `--no-verify` | n/a |
 
@@ -24,6 +25,7 @@ later the wendy-agent wrapper). Changes after v1 are additive only.
 | 2 | `commit`: nothing to commit (NOT an error — mirrors mender-update; wendy-agent already special-cases it) |
 | 3 | Artifact rejected (incompatible device, bad checksum, malformed) |
 | 4 | Verification failed at commit — platform (firmware slot/ESRT) OR a health.d hook; the deployment is marked failed, caller should expect rollback |
+| 5 | `check`: the device could not take an install right now (a verdict, not a malfunction — the failing checks are named on stderr and in `--json`) |
 
 ## Output streams
 

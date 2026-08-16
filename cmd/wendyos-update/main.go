@@ -2,7 +2,7 @@
 // CLI contract: docs/cli-contract.md (v1, frozen).
 //
 // Exit codes: 0 ok · 1 error · 2 nothing-to-commit · 3 artifact rejected
-// · 4 platform verification failed.
+// · 4 platform verification failed · 5 check: device not ready.
 package main
 
 import (
@@ -125,6 +125,8 @@ func main() {
 			os.Exit(1)
 		}
 		err = cmdSwitch(os.Args[2])
+	case "check":
+		err = cmdCheck(hasFlag(os.Args[2:], "--json"))
 	case "mark-good":
 		err = cmdMarkGood()
 	case "pack":
@@ -142,12 +144,18 @@ func main() {
 	}
 
 	if err != nil {
+		var notReady *notReadyError
+		switch {
 		// "nothing to commit" is the normal every-boot outcome of the
 		// auto-commit service (exit 2) — log it at info, not as an error,
 		// so it does not show up red/high-priority in the journal.
-		if errors.Is(err, engine.ErrNothingToCommit) {
+		case errors.Is(err, engine.ErrNothingToCommit):
 			slog.Info(err.Error())
-		} else {
+		// `check` has already printed a per-check report, so logging the
+		// same sentence again is pure noise. The exit code carries the
+		// verdict; --json carries it on stdout for machine callers.
+		case errors.As(err, &notReady):
+		default:
 			slog.Error(err.Error())
 		}
 		os.Exit(exitCode(err))
@@ -164,6 +172,8 @@ usage:
                                       per-slot state (rootfs/distro/kernel) + pending update
                                       (--verbose adds a raw slot/EFI-var snapshot)
   wendyos-update switch <other|a|b>   boot the other slot next, no update (reboot to apply)
+  wendyos-update check [--json]       report whether this device could take an install
+                                      now (exit 5 = not ready); changes nothing
   wendyos-update mark-good            reset slot health, clear pending state
   wendyos-update pack <flags>         build a .wendy artifact from a rootfs image (host-side)`)
 }
@@ -174,12 +184,42 @@ const (
 	exitNothingToCommit = 2 // commit: nothing to commit (not an error)
 	exitRejected        = 3 // artifact rejected (incompatible/bad/malformed)
 	exitVerifyFailed    = 4 // platform or health verification failed at commit
+	exitNotReady        = 5 // check: the device could not take an install right now
 )
+
+// notReadyError is the verdict from `check` when something would stop an
+// install. It is a verdict, not a malfunction, so it carries its own exit code
+// rather than sharing the generic one — a caller must be able to tell "the
+// device is not ready" from "the tool broke".
+//
+// The message names what failed and why. A caller reading only stderr should
+// not have to re-run with --json to find out which check tripped.
+type notReadyError struct{ failed []connector.Check }
+
+func (e *notReadyError) Error() string {
+	parts := make([]string, 0, len(e.failed))
+	for _, c := range e.failed {
+		if c.Detail == "" {
+			parts = append(parts, c.Name)
+			continue
+		}
+		parts = append(parts, c.Name+": "+c.Detail)
+	}
+	if len(parts) == 1 {
+		return parts[0]
+	}
+
+	return fmt.Sprintf("%d checks failed — %s", len(parts), strings.Join(parts, "; "))
+}
 
 // exitCode maps typed errors to contract exit codes (docs/cli-contract.md).
 func exitCode(err error) int {
 	if errors.Is(err, engine.ErrNothingToCommit) {
 		return exitNothingToCommit
+	}
+	var nr *notReadyError
+	if errors.As(err, &nr) {
+		return exitNotReady
 	}
 	var rej *engine.RejectError
 	if errors.As(err, &rej) {
@@ -313,6 +353,51 @@ func hasFlag(args []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// cmdCheck reports whether this device could take an install right now. It
+// reads state and probes hardware; it changes nothing, so it is safe to run at
+// any time, including while an update is pending.
+func cmdCheck(asJSON bool) error {
+	eng, err := newEngine()
+	if err != nil {
+		return err
+	}
+	checks := eng.Check()
+
+	var failed []connector.Check
+	for _, c := range checks {
+		if !c.OK {
+			failed = append(failed, c)
+		}
+	}
+
+	if asJSON {
+		out, _ := json.MarshalIndent(struct {
+			OK     bool              `json:"ok"`
+			Checks []connector.Check `json:"checks"`
+		}{OK: len(failed) == 0, Checks: checks}, "", "  ")
+		fmt.Println(string(out))
+	} else {
+		w := os.Stderr
+		fmt.Fprintf(w, "wendyos-update %s   ·   connector: %s\n\n", version, eng.Conn.Name())
+		for _, c := range checks {
+			mark := "ok  "
+			if !c.OK {
+				mark = "FAIL"
+			}
+			fmt.Fprintf(w, "  [%s] %s\n", mark, c.Name)
+			if c.Detail != "" {
+				fmt.Fprintf(w, "         %s\n", c.Detail)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	if len(failed) > 0 {
+		return &notReadyError{failed: failed}
+	}
+	return nil
 }
 
 func cmdStatus(asJSON, verbose bool) error {
