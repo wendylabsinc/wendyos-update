@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
@@ -37,16 +38,24 @@ func (c *Controller) Diagnostics(verbose bool) map[string]string {
 		}
 	}
 
-	// ESRT entry0 — outcome of the last capsule (bootloader) update.
+	// ESRT entry0 — outcome of the last capsule (bootloader) update. The two
+	// version fields are packed integers, so they are shown decoded (see
+	// l4tVersionLabel); last_attempt_status is a plain status code.
 	esrtDir := filepath.Dir(c.RootDir + ESRTStatusPath)
 	for key, file := range map[string]string{
 		"esrt_last_attempt_status":      "last_attempt_status",
 		"esrt_fw_version":               "fw_version",
 		"esrt_lowest_supported_version": "lowest_supported_fw_version",
 	} {
-		if b, err := os.ReadFile(filepath.Join(esrtDir, file)); err == nil {
-			d[key] = strings.TrimSpace(string(b))
+		b, err := os.ReadFile(filepath.Join(esrtDir, file))
+		if err != nil {
+			continue
 		}
+		v := strings.TrimSpace(string(b))
+		if key != "esrt_last_attempt_status" {
+			v = l4tVersionLabel(v)
+		}
+		d[key] = v
 	}
 
 	// Per-slot rootfs health efivar (normal vs unbootable).
@@ -129,6 +138,37 @@ func (c *Controller) verboseDiagnostics(d map[string]string, blInfo string) {
 		armed := len(raw) >= 5 && raw[4]&osIndicationsProcessCapsule != 0
 		d["osindications"] = fmt.Sprintf("% x (capsule_armed=%t)", raw, armed)
 	}
+}
+
+// l4tVersionLabel renders a packed L4T firmware version as "<branch>.<major>.
+// <minor> (<raw>)", keeping the raw integer because that is what the ESRT
+// sysfs files and NVIDIA's own tooling report.
+//
+// The packing is meta-tegra's oe4t.uefi.get_hex_version(), which builds the
+// capsule's FMP version from L4T_VERSION:
+//
+//	0x%02x%02x%02x%02x % (branch >> 8, branch & 0xff, major, minor)
+//
+// so the branch occupies the top 16 bits, not 8. L4T 39.2.0 packs to
+// 0x00270200 = 2556416, which is what an r39.2 Thor reports for both
+// fw_version and, once a capsule has been applied,
+// lowest_supported_fw_version.
+//
+// Unparseable input is passed through untouched — this is a diagnostics dump
+// and must never hide what the device actually said. Zero is reported as
+// "none" rather than "0.0.0": for lowest_supported_fw_version it means no
+// floor is enforced (FmpDxe's DEFAULT_LOWESTSUPPORTEDVERSION), and for
+// fw_version it means no FMP version was reported.
+func l4tVersionLabel(raw string) string {
+	v, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return raw
+	}
+	if v == 0 {
+		return raw + " (none)"
+	}
+
+	return fmt.Sprintf("%d.%d.%d (%s)", (v>>16)&0xffff, (v>>8)&0xff, v&0xff, raw)
 }
 
 // varStem strips the trailing "-<GUID>" from an efivarfs filename
