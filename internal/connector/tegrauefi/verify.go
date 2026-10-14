@@ -20,16 +20,13 @@ const (
 	esrtSuccess   = 0
 	esrtUEFIErrLo = 1 // 1..6: standard UEFI capsule errors
 	esrtUEFIErrHi = 6
-	// 6163: NVIDIA "CheckTheImage failed" — the capsule was rejected. NOT a
-	// cert/auth failure (test-cert capsules verify fine on a clean device).
-	// Observed to be boot-chain-state dependent: staging onto an un-settled
-	// or pending boot-chain transition produces it; a fresh flash or a
-	// fully-committed prior apply clears it (t264 investigation 2026-06-14;
-	// NVIDIA fwd: forums.developer.nvidia.com thread 368593).
-	esrtNvidiaCheckImageFail = 6163
-	esrtNvidiaSKUMismatch    = 6164   // device SKU not in the capsule's BUP
-	esrtNvidiaVendorLo       = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
-	esrtNvidiaVendorHi       = 0x4000
+	// NVIDIA TegraFmp LAS_ERROR values on r39.2. A pending boot-chain operation
+	// cancels capsule processing; 6163 does not indicate a signature failure.
+	// https://github.com/NVIDIA/edk2-nvidia/blob/bd49b331a0bbdeef7a34c224a3767f77e36da0c4/Silicon/NVIDIA/Library/FmpDeviceLib/TegraFmp.c
+	esrtNvidiaBootChainUpdateCanceled = 6163
+	esrtNvidiaGPTMetadataUpdateFailed = 6164
+	esrtNvidiaVendorLo                = 0x1000 // 0x1000..0x4000: NVIDIA vendor error range
+	esrtNvidiaVendorHi                = 0x4000
 )
 
 // BootIsCompromised reports whether the firmware flagged the slot we
@@ -88,9 +85,8 @@ func (c *Controller) BootIsCompromised() (bool, error) {
 //  3. FALLBACK:  we booted, assume success — but say so loudly
 //
 // Validated ESRT codes (t234 incident analysis + t264 Phase 1):
-// 0 success; 1-6 standard UEFI capsule errors; 6163 NVIDIA "CheckTheImage
-// failed" / capsule rejected (boot-chain-state dependent, NOT a cert/auth
-// failure — see the const above); 6164 NVIDIA SKU mismatch; 0x1000-0x4000
+// 0 success; 1-6 standard UEFI capsule errors; 6163 NVIDIA boot-chain update
+// canceled; 6164 NVIDIA GPT metadata update failed; 0x1000-0x4000
 // NVIDIA vendor range. nvbootctrl's own capsule status is NOT consulted —
 // NVIDIA documents it as unreliable.
 func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
@@ -132,10 +128,10 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 			return nil
 		case status >= esrtUEFIErrLo && status <= esrtUEFIErrHi:
 			return fmt.Errorf("platform verify: ESRT status %d (standard UEFI capsule error)", status)
-		case status == esrtNvidiaCheckImageFail:
-			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: capsule rejected / CheckTheImage failed — typically a pending/un-settled boot-chain state, not a signature problem)", esrtNvidiaCheckImageFail)
-		case status == esrtNvidiaSKUMismatch:
-			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: device SKU not included in the capsule's BUP)", esrtNvidiaSKUMismatch)
+		case status == esrtNvidiaBootChainUpdateCanceled:
+			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: boot-chain update canceled; check for an unsettled boot-chain operation)", esrtNvidiaBootChainUpdateCanceled)
+		case status == esrtNvidiaGPTMetadataUpdateFailed:
+			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA: GPT metadata update failed)", esrtNvidiaGPTMetadataUpdateFailed)
 		case status >= esrtNvidiaVendorLo && status <= esrtNvidiaVendorHi:
 			return fmt.Errorf("platform verify: ESRT status %d (NVIDIA vendor error)", status)
 		default:
@@ -165,6 +161,15 @@ func (c *Controller) AbortPlatformUpdate() error {
 			if err := os.Remove(cap); err != nil {
 				return fmt.Errorf("abort platform update: %w", err)
 			}
+		}
+	} else {
+		// A rootfs-only rollback has nothing to remove. When capsule state is
+		// present, however, do not silently leave a staged file on an unknown
+		// disk and then report a successful cleanup.
+		osi, readErr := os.ReadFile(filepath.Join(c.EfivarsDir, "OsIndications-"+EfiGlobalGUID))
+		_, versionErr := os.Stat(c.blVersionBeforePath())
+		if (readErr == nil && len(osi) >= 5 && osi[4]&osIndicationsProcessCapsule != 0) || versionErr == nil {
+			return fmt.Errorf("abort platform update: %w", err)
 		}
 	}
 

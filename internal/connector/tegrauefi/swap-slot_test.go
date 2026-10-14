@@ -1,6 +1,7 @@
 package tegrauefi
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,24 +58,16 @@ func TestCapsuleUpdateEffective(t *testing.T) {
 
 // installSwapSetup wires a controller so SwapSlot(_, true) can reach the
 // marker-inspection branch without real block devices: PartitionFor resolves
-// via a by-partlabel symlink under RootDir, and mountFn returns a fake rootfs
+// the boot disk's labels from a fake lsblk inventory, and mountFn returns a fake rootfs
 // mount whose marker presence the test controls.
 func installSwapSetup(t *testing.T, c *Controller, target connector.Slot, hasMarker bool) {
 	t.Helper()
 
-	// PartitionFor(target) resolves the APP/APP_b by-partlabel symlink.
-	label := partlabelFor(target)
-	linkDir := filepath.Join(c.RootDir, "dev", "disk", "by-partlabel")
-	if err := os.MkdirAll(linkDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	devFile := filepath.Join(c.RootDir, "fake-"+label)
-	if err := os.WriteFile(devFile, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(devFile, filepath.Join(linkDir, label)); err != nil {
-		t.Fatal(err)
-	}
+	parts := dualDiskParts()
+	c.rootIDFn = func() (string, error) { return "259:1", nil }
+	c.listPartsFn = func() ([]partitionInfo, error) { return parts, nil }
+	c.mountInfoFn = func(string) (mountInfo, bool, error) { return mountInfo{}, false, nil }
+	c.mountESPFn = func(string) (string, func(), error) { return "", nil, fmt.Errorf("test has no ESP mount") }
 
 	// mountFn returns a fake rootfs mount; the marker decides which branch
 	// SwapSlot takes.

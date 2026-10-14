@@ -122,14 +122,14 @@ func TestVerifyPlatformUpdateSameVersionESRTSuccess(t *testing.T) {
 	}
 }
 
-func TestVerifyPlatformUpdateESRTCertFailure(t *testing.T) {
+func TestVerifyPlatformUpdateESRTBootChainCanceled(t *testing.T) {
 	c := testController(t)
 	c.Nvbootctrl = dumpSlotsInfoFake(t, "38.4.0")
 	verifySetup(t, c, "38.4.0", "6163")
 
 	err := c.VerifyPlatformUpdate(true)
 	if err == nil || !strings.Contains(err.Error(), "6163") {
-		t.Fatalf("want 6163 cert error, got %v", err)
+		t.Fatalf("want 6163 boot-chain cancellation, got %v", err)
 	}
 }
 

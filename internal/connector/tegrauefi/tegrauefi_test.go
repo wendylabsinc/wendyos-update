@@ -281,29 +281,6 @@ func TestCurrentSlot(t *testing.T) {
 	}
 }
 
-func TestSplitPartDev(t *testing.T) {
-	for _, tc := range []struct {
-		dev  string
-		base string
-		num  int
-		err  bool
-	}{
-		{"/dev/nvme0n1p2", "/dev/nvme0n1", 2, false},
-		{"/dev/mmcblk0p1", "/dev/mmcblk0", 1, false},
-		{"/dev/nvme0n1p17", "/dev/nvme0n1", 17, false},
-		{"/dev/sda2", "", 0, true}, // no 'p' separator scheme
-		{"/dev/nvme0n1p", "", 0, true},
-	} {
-		base, num, err := splitPartDev(tc.dev)
-		if tc.err != (err != nil) {
-			t.Fatalf("%s: err=%v, want err=%v", tc.dev, err, tc.err)
-		}
-		if !tc.err && (base != tc.base || num != tc.num) {
-			t.Fatalf("%s: got (%s,%d), want (%s,%d)", tc.dev, base, num, tc.base, tc.num)
-		}
-	}
-}
-
 func TestStatusIsNormal(t *testing.T) {
 	normal := []byte{0x07, 0, 0, 0, 0, 0, 0, 0}
 	unbootable := []byte{0x07, 0, 0, 0, 0xFF, 0, 0, 0}

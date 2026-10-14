@@ -45,6 +45,11 @@ var espPartlabels = []string{"esp", "UEFI-ESP"}
 //     install inspection must be skipped entirely.
 func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error {
 	if !stagePlatformUpdate {
+		if already, err := c.rollbackAlreadyActive(s); err != nil {
+			return err
+		} else if already {
+			return nil
+		}
 		// Rollback: just re-point the active boot slot.
 		if err := c.recordBootAttempt(s); err != nil {
 			return err
@@ -103,6 +108,9 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	}
 
 	// CAPSULE UPDATE.
+	if err := c.checkCapsuleBootChainIdle(); err != nil {
+		return fmt.Errorf("swap to slot %s: %w", s, err)
+	}
 	slog.Info("swap: bootloader marker present, staging capsule update", "slot", s.String())
 	if _, err := os.Stat(capsule); err != nil {
 		return fmt.Errorf("swap to slot %s: bootloader update requested by rootfs marker but capsule missing at %s", s, CapsuleSrcPath)
@@ -271,30 +279,28 @@ func (c *Controller) bootloaderVersion() (string, error) {
 	return "", fmt.Errorf("nvbootctrl dump-slots-info: no 'Current version:' line")
 }
 
-// espMountpoint returns where the ESP is mounted, mounting it at
-// /run/wendyos-update/esp if necessary (switch-rootfs behavior:
-// findmnt /boot/efi, else mount by-partlabel).
+// espMountpoint returns a verified mount of the boot disk's ESP. A different
+// disk mounted at /boot/efi is left alone; the selected ESP is mounted privately.
 func (c *Controller) espMountpoint() (string, error) {
-	if out, err := runCmd("findmnt", "-no", "TARGET", "/boot/efi"); err == nil {
-		if t := strings.TrimSpace(out); t != "" {
-			return t, nil
-		}
+	esp, err := c.espPartition()
+	if err != nil {
+		return "", err
 	}
-	for _, label := range espPartlabels {
-		link := c.RootDir + "/dev/disk/by-partlabel/" + label
-		dev, err := filepath.EvalSymlinks(link)
-		if err != nil {
-			continue
-		}
-		dir, _, err := c.mountVfat(dev)
-		if err != nil {
-			return "", fmt.Errorf("mount ESP %s: %w", dev, err)
-		}
-		// Left mounted on purpose: the staged capsule must be on disk
-		// at reboot; the mount dies with the system anyway.
-		return dir, nil
+	if dir, err := c.existingESPMount(esp); err != nil || dir != "" {
+		return dir, err
 	}
-	return "", fmt.Errorf("ESP not mounted at /boot/efi and no by-partlabel match (%v)", espPartlabels)
+	dir, unmount, err := c.mountESPFn(esp.Path)
+	if err != nil {
+		return "", fmt.Errorf("mount ESP %s: %w", esp.Path, err)
+	}
+	mounted, found, err := c.mountInfoFn(dir)
+	if err != nil || !found || mounted.DeviceID != esp.DeviceID || mounted.FSType != "vfat" || !strings.Contains(","+mounted.Options+",", ",rw,") {
+		unmount()
+		return "", fmt.Errorf("mount ESP %s at %s: could not verify the expected read-write vfat mount (found=%t source=%s): %v", esp.Path, dir, found, mounted.Source, err)
+	}
+	// Keep the private mount through staging/rollback. syncfs makes the capsule
+	// durable, and the mount dies with the system at reboot.
+	return dir, nil
 }
 
 // copyFileSync copies src to dst and makes it durable before OsIndications is
@@ -385,7 +391,7 @@ func defaultMount(dev string) (string, func(), error) {
 
 // mountVfat mounts the ESP read-write.
 func (c *Controller) mountVfat(dev string) (string, func(), error) {
-	dir := "/run/wendyos-update/esp"
+	dir := c.privateESPMountpoint()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", nil, err
 	}
