@@ -108,8 +108,8 @@ type Controller struct {
 	RootDir string // prefix for filesystem lookups (tests); "" in production
 
 	env          envStore
-	rootDeviceFn func() (string, error)     // block device mounted at /
-	listPartsFn  func() ([]partInfo, error) // block partitions (lsblk)
+	rootDeviceFn func() (string, error)                // block device mounted at /
+	listPartsFn  func(root string) ([]partInfo, error) // block partitions (lsblk)
 }
 
 func New() *Controller {
@@ -121,8 +121,24 @@ func New() *Controller {
 }
 
 var _ connector.Connector = (*Controller)(nil)
+var _ connector.StatusSnapshotter = (*Controller)(nil)
 
 func (c *Controller) Name() string { return "grubenv" }
+
+// StatusSnapshot reuses the root and partition observations for one status
+// request, including its verbose diagnostics. Keep this state on a copy: an
+// install or a later status request must observe the device again.
+func (c *Controller) StatusSnapshot() connector.StatusReader {
+	view := *c
+	root, rootErr := c.rootDeviceFn()
+	view.rootDeviceFn = func() (string, error) { return root, rootErr }
+	if rootErr != nil {
+		return &view // CurrentSlot reports the error without a partition scan.
+	}
+	parts, partsErr := c.listPartsFn(root)
+	view.listPartsFn = func(string) ([]partInfo, error) { return parts, partsErr }
+	return &view
+}
 
 // --- grub-editenv-backed envStore ---
 
@@ -263,10 +279,11 @@ func canon(dev string) string {
 	return dev
 }
 
-// lsblkParts lists block partitions with their partlabel, fs label and parent
-// disk. -P (KEY="value") is robust to empty columns.
-func lsblkParts() ([]partInfo, error) {
-	out, err := exec.Command("lsblk", "-Pno", "PATH,PARTLABEL,LABEL,PKNAME").Output()
+// lsblkParts lists the running root's disk when sysfs identifies its parent.
+// Reading filesystem labels across unrelated firmware disks can take seconds
+// on Qualcomm boards. Unknown/stacked layouts retain the original full scan.
+func lsblkParts(root string) ([]partInfo, error) {
+	out, err := exec.Command("lsblk", lsblkArgs(root, "/sys/class/block")...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +300,37 @@ func lsblkParts() ([]partInfo, error) {
 		})
 	}
 	return parts, nil
+}
+
+func lsblkArgs(root, sysClassBlock string) []string {
+	args := []string{"-Pno", "PATH,PARTLABEL,LABEL,PKNAME"}
+	if disk := rootDiskDevice(root, sysClassBlock); disk != "" {
+		args = append(args, "--", disk)
+	}
+	return args
+}
+
+// rootDiskDevice reads the kernel's partition-parent relationship, without
+// guessing from names such as sda3/mmcblk0p2 or consulting ambiguous labels.
+// A device-mapper/whole-device root is not a partition; leave those layouts to
+// the existing full enumeration and boot-disk checks.
+func rootDiskDevice(root, sysClassBlock string) string {
+	if root == "" {
+		return ""
+	}
+	entry := filepath.Join(sysClassBlock, filepath.Base(canon(root)))
+	if _, err := os.Stat(filepath.Join(entry, "partition")); err != nil {
+		return ""
+	}
+	resolved, err := filepath.EvalSymlinks(entry)
+	if err != nil {
+		return ""
+	}
+	disk := filepath.Base(filepath.Dir(resolved))
+	if disk == "." || disk == "/" || disk == "block" {
+		return ""
+	}
+	return filepath.Join("/dev", disk)
 }
 
 // lsblkField extracts KEY's value from an lsblk -P line (KEY="value" ...).
@@ -305,11 +353,7 @@ func lsblkField(line, key string) string {
 // this disk so a SECOND disk carrying the same rootfsA/rootfsB (e.g. the install
 // media beside the internal disk) cannot shadow the disk we actually booted
 // from — and so `install` never writes the inactive slot to the wrong disk.
-func (c *Controller) bootDisk(parts []partInfo) (string, error) {
-	root, err := c.rootDeviceFn()
-	if err != nil {
-		return "", err
-	}
+func bootDisk(parts []partInfo, root string) (string, error) {
 	root = canon(root)
 	for _, p := range parts {
 		if canon(p.path) == root {
@@ -325,9 +369,10 @@ func (c *Controller) bootDisk(parts []partInfo) (string, error) {
 // running root is not listed by lsblk (early boot / unit tests).
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
 	label := rootfsSlotLabel(s)
+	root, _ := c.rootDeviceFn()
 
-	if parts, err := c.listPartsFn(); err == nil {
-		if disk, err := c.bootDisk(parts); err == nil && disk != "" {
+	if parts, err := c.listPartsFn(root); err == nil {
+		if disk, err := bootDisk(parts, root); err == nil && disk != "" {
 			for _, p := range parts {
 				if effectiveLabel(p) == label && p.pkname == disk {
 					return p.path, nil
@@ -360,7 +405,7 @@ func (c *Controller) CurrentSlot() (connector.Slot, error) {
 
 	// Identify the running root by its OWN partlabel (unambiguous even when a
 	// second disk carries the same rootfsA/rootfsB).
-	if parts, err := c.listPartsFn(); err == nil {
+	if parts, err := c.listPartsFn(root); err == nil {
 		for _, p := range parts {
 			if canon(p.path) != root {
 				continue

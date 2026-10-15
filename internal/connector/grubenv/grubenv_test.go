@@ -118,7 +118,7 @@ func testController(t *testing.T, env *fakeEnv, running connector.Slot, makeSlot
 
 	// Single-disk fake: both slots live on one disk ("nvme0n1"). Exercises the
 	// boot-disk-scoped resolution path; empty when makeSlots is false.
-	c.listPartsFn = func() ([]partInfo, error) {
+	c.listPartsFn = func(string) ([]partInfo, error) {
 		if !makeSlots {
 			return nil, nil
 		}
@@ -195,7 +195,7 @@ func TestSlotResolutionPartlabelWinsOverFSLabel(t *testing.T) {
 	c.RootDir = t.TempDir()
 	const a, b = "/dev/nvme0n1p3", "/dev/nvme0n1p4"
 	c.rootDeviceFn = func() (string, error) { return a, nil }
-	c.listPartsFn = func() ([]partInfo, error) {
+	c.listPartsFn = func(string) ([]partInfo, error) {
 		return []partInfo{
 			{path: a, partlabel: partlabelA, label: "bogusA", pkname: "nvme0n1"},
 			{path: b, partlabel: partlabelB, label: "bogusB", pkname: "nvme0n1"},
@@ -220,7 +220,7 @@ func TestSlotResolutionScopedToBootDisk(t *testing.T) {
 	const usbA, usbB = "/dev/sda3", "/dev/sda4"
 	const nvA, nvB = "/dev/nvme0n1p3", "/dev/nvme0n1p4"
 	c.rootDeviceFn = func() (string, error) { return usbA, nil } // booted from USB
-	c.listPartsFn = func() ([]partInfo, error) {
+	c.listPartsFn = func(string) ([]partInfo, error) {
 		return []partInfo{
 			{path: usbA, partlabel: partlabelA, pkname: "sda"},
 			{path: usbB, partlabel: partlabelB, pkname: "sda"},
