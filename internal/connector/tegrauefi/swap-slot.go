@@ -45,8 +45,10 @@ var espPartlabels = []string{"esp", "UEFI-ESP"}
 //     install inspection must be skipped entirely.
 func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error {
 	if !stagePlatformUpdate {
+		// Re-pointing costs at most a redundant boot-chain request; refusing on
+		// unreadable evidence would strand the rollback.
 		if already, err := c.rollbackAlreadyActive(s); err != nil {
-			return err
+			slog.Warn("rollback: cannot tell whether the boot chain already settled; re-pointing the slot", "slot", s.String(), "err", err)
 		} else if already {
 			return nil
 		}
@@ -111,13 +113,18 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 	if err := c.checkCapsuleBootChainIdle(); err != nil {
 		return fmt.Errorf("swap to slot %s: %w", s, err)
 	}
-	slog.Info("swap: bootloader marker present, staging capsule update", "slot", s.String())
+	esp, err := c.capsuleESP()
+	if err != nil {
+		return fmt.Errorf("swap to slot %s: %w", s, err)
+	}
+	slog.Info("swap: bootloader marker present, staging capsule update", "slot", s.String(), "esp", esp.Path)
 	if _, err := os.Stat(capsule); err != nil {
 		return fmt.Errorf("swap to slot %s: bootloader update requested by rootfs marker but capsule missing at %s", s, CapsuleSrcPath)
 	}
 
 	// Save the current bootloader version for post-reboot verification
-	// (verify-bootloader-update's primary check).
+	// (verify-bootloader-update's primary check). A version left by an earlier
+	// attempt must not stand in for this one.
 	if ver, err := c.bootloaderVersion(); err == nil {
 		_ = os.MkdirAll(filepath.Dir(c.blVersionBeforePath()), 0o755)
 		if werr := os.WriteFile(c.blVersionBeforePath(), []byte(ver+"\n"), 0o644); werr != nil {
@@ -125,9 +132,10 @@ func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error 
 		}
 	} else {
 		slog.Warn("could not record pre-update bootloader version", "err", err)
+		_ = os.Remove(c.blVersionBeforePath())
 	}
 
-	espDir, err := c.espMountpoint()
+	espDir, err := c.espMountpoint(esp)
 	if err != nil {
 		return fmt.Errorf("swap to slot %s: %w", s, err)
 	}
@@ -279,13 +287,9 @@ func (c *Controller) bootloaderVersion() (string, error) {
 	return "", fmt.Errorf("nvbootctrl dump-slots-info: no 'Current version:' line")
 }
 
-// espMountpoint returns a verified mount of the boot disk's ESP. A different
-// disk mounted at /boot/efi is left alone; the selected ESP is mounted privately.
-func (c *Controller) espMountpoint() (string, error) {
-	esp, err := c.espPartition()
-	if err != nil {
-		return "", err
-	}
+// espMountpoint returns a verified read-write mount of esp. A different disk
+// mounted at /boot/efi is left alone; esp is then mounted privately.
+func (c *Controller) espMountpoint(esp partitionInfo) (string, error) {
 	if dir, err := c.existingESPMount(esp); err != nil || dir != "" {
 		return dir, err
 	}
@@ -293,10 +297,13 @@ func (c *Controller) espMountpoint() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("mount ESP %s: %w", esp.Path, err)
 	}
-	mounted, found, err := c.mountInfoFn(dir)
-	if err != nil || !found || mounted.DeviceID != esp.DeviceID || mounted.FSType != "vfat" || !strings.Contains(","+mounted.Options+",", ",rw,") {
+	// The new mount must pass the same check an existing one does.
+	if got, err := c.existingESPMount(esp); err != nil || got != dir {
 		unmount()
-		return "", fmt.Errorf("mount ESP %s at %s: could not verify the expected read-write vfat mount (found=%t source=%s): %v", esp.Path, dir, found, mounted.Source, err)
+		if err == nil {
+			err = fmt.Errorf("found it at %q", got)
+		}
+		return "", fmt.Errorf("mount ESP %s at %s: could not verify the read-write vfat mount: %w", esp.Path, dir, err)
 	}
 	// Keep the private mount through staging/rollback. syncfs makes the capsule
 	// durable, and the mount dies with the system at reboot.

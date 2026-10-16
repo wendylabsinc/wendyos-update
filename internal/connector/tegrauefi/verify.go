@@ -147,39 +147,30 @@ func (c *Controller) VerifyPlatformUpdate(blUpdate bool) error {
 	return nil
 }
 
-// AbortPlatformUpdate unstages a capsule that has not been processed:
-// removes TEGRA_BL.Cap from the ESP (port of abort-blupdate) and disarms
-// the OsIndications capsule bit so the firmware will not look for one.
-// No-op when nothing is staged.
+// AbortPlatformUpdate unstages a capsule that has not been processed (port
+// of abort-blupdate). Disarming comes first: firmware ignores a capsule file
+// without the OsIndications bit, so the file cleanup after it is best-effort.
 func (c *Controller) AbortPlatformUpdate() error {
-	staged := false
-
-	if espDir, err := c.espMountpoint(); err == nil {
-		cap := filepath.Join(espDir, ESPCapsuleRel)
-		if _, err := os.Stat(cap); err == nil {
-			staged = true
-			if err := os.Remove(cap); err != nil {
-				return fmt.Errorf("abort platform update: %w", err)
-			}
-		}
-	} else {
-		// A rootfs-only rollback has nothing to remove. When capsule state is
-		// present, however, do not silently leave a staged file on an unknown
-		// disk and then report a successful cleanup.
-		osi, readErr := os.ReadFile(filepath.Join(c.EfivarsDir, "OsIndications-"+EfiGlobalGUID))
-		_, versionErr := os.Stat(c.blVersionBeforePath())
-		if (readErr == nil && len(osi) >= 5 && osi[4]&osIndicationsProcessCapsule != 0) || versionErr == nil {
-			return fmt.Errorf("abort platform update: %w", err)
-		}
-	}
-
 	osiPath := filepath.Join(c.EfivarsDir, "OsIndications-"+EfiGlobalGUID)
 	if err := clearOsIndicationsCapsuleBit(osiPath); err != nil {
 		return fmt.Errorf("abort platform update: %w", err)
 	}
+	// The recorded version only verifies a capsule that will be processed.
+	if err := os.Remove(c.blVersionBeforePath()); err != nil && !os.IsNotExist(err) {
+		slog.Warn("abort platform update: could not remove the pre-update bootloader version", "err", err)
+	}
 
-	if staged {
-		_ = os.Remove(c.blVersionBeforePath())
+	esp, err := c.espPartition()
+	var espDir string
+	if err == nil {
+		espDir, err = c.espMountpoint(esp)
+	}
+	if err != nil {
+		slog.Warn("abort platform update: capsule disarmed, but the ESP could not be inspected; a staged file may remain", "err", err)
+		return nil
+	}
+	if err := os.Remove(filepath.Join(espDir, ESPCapsuleRel)); err != nil && !os.IsNotExist(err) {
+		slog.Warn("abort platform update: capsule disarmed, but the staged file could not be removed", "err", err)
 	}
 	return nil
 }

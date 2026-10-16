@@ -95,7 +95,9 @@ func TestRollbackKeepsPendingSwitchCancellation(t *testing.T) {
 	}
 }
 
-func TestRollbackCannotInferSettledStateFromBadEvidence(t *testing.T) {
+// Unreadable evidence is never taken as a settled rollback, and it must not
+// strand the rollback either: re-pointing the slot is the safe fallback.
+func TestRollbackRepointsWhenSettledStateIsUnknown(t *testing.T) {
 	for _, tc := range []struct {
 		name, dump string
 		badNext    bool
@@ -111,12 +113,15 @@ func TestRollbackCannotInferSettledStateFromBadEvidence(t *testing.T) {
 			if tc.badNext {
 				bootChainTestVar(t, c, "BootChainFwNext", 255)
 			}
-			if err := c.SwapSlot(connector.SlotA, false); err == nil {
-				t.Fatal("rollback inferred a settled state from invalid evidence")
+			if already, err := c.rollbackAlreadyActive(connector.SlotA); err == nil || already {
+				t.Fatalf("settled state inferred from invalid evidence: already=%t err=%v", already, err)
+			}
+			if err := c.SwapSlot(connector.SlotA, false); err != nil {
+				t.Fatalf("rollback refused after an inconclusive inspection: %v", err)
 			}
 			raw, _ := os.ReadFile(calls)
-			if strings.Contains(string(raw), "set-active-boot-slot") {
-				t.Fatalf("rollback mutated state after failed inspection: %s", raw)
+			if !strings.Contains(string(raw), "set-active-boot-slot 0") {
+				t.Fatalf("rollback did not re-point the slot: %s", raw)
 			}
 		})
 	}

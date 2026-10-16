@@ -29,12 +29,12 @@ The engine calls the connector ONLY through this interface
 | Method | Called when | Tegra (validated) | RPi / U-Boot (mapping) |
 |---|---|---|---|
 | `CurrentSlot()` | everywhere | `nvbootctrl -t rootfs get-current-slot` | root device from `/proc/cmdline` or `fw_printenv` slot var |
-| `PartitionFor(slot)` | before write | partlabel `APP`/`APP_b` → lsblk → nv_boot_control.conf → number toggle | fixed p2/p3 or PARTUUID map (partuuid-rpi class) |
+| `PartitionFor(slot)` | before write | `APP`/`APP_b` on the running root's disk (root label must match the firmware slot); unlabelled disk → adjacent partition number; root without a backing partition → a label no other disk carries. Never a global label shared by two disks | fixed p2/p3 or PARTUUID map (partuuid-rpi class) |
 | `PrepareTarget(slot)` | after write, before flip | reset `RootfsStatusSlot*` efivar (also re-seeds retry budget) | clear stale trial state in U-Boot env |
 | `SwapSlot(slot, stagePlatformUpdate)` | install (true) + rollback (false) | install: `set-active-boot-slot` OR capsule staging + OsIndications (never both); rollback: pure `set-active-boot-slot`, no rootfs mount | `fw_setenv` target slot + arm trial boot (`bootcount=0`, `upgrade_available=1`); rollback: re-point only |
 | `BootIsCompromised()` | verify unit, early boot | any `RootfsStatusSlot*` status ≠ 0 | `upgrade_available=1` but running the OLD slot ⇒ U-Boot fell back |
 | `VerifyPlatformUpdate(blUpdate)` | commit, before finalize | BL version + ESRT cascade | no-op in v1 (rpi-eeprom has its own flow) |
-| `AbortPlatformUpdate()` | rollback, before swap-back | remove staged capsule from ESP + disarm OsIndications | no-op in v1 |
+| `AbortPlatformUpdate()` | rollback, before swap-back | disarm OsIndications first, then best-effort removal of the staged capsule from the root disk's ESP | no-op in v1 |
 | `MarkGood()` | commit, after verify | clear bookkeeping + reset inactive slot status var | `upgrade_available=0`, persist slot var |
 
 Design rules that keep the boundary honest:

@@ -2,12 +2,15 @@ package tegrauefi
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/wendylabsinc/wendyos-update/internal/blockdev"
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
+	"golang.org/x/sys/unix"
 )
 
 func dualDiskParts() []partitionInfo {
@@ -35,7 +38,21 @@ func storageController(t *testing.T) *Controller {
 		t.Fatal("unexpected mount")
 		return "", nil, nil
 	}
+	c.deviceMountsFn = func(string) ([]string, error) { return nil, nil }
+	c.mountESPReadOnlyFn = func(string) (string, func(), error) {
+		t.Fatal("unexpected read-only mount")
+		return "", nil, nil
+	}
 	return c
+}
+
+// stagingMount resolves and mounts the ESP the way capsule staging does.
+func stagingMount(c *Controller) (string, error) {
+	esp, err := c.capsuleESP()
+	if err != nil {
+		return "", err
+	}
+	return c.espMountpoint(esp)
 }
 
 func TestPartitionForUsesRunningDisk(t *testing.T) {
@@ -119,7 +136,7 @@ func TestESPResolutionRejectsMissingOrAmbiguousLayout(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			c := storageController(t)
 			c.listPartsFn = func() ([]partitionInfo, error) { return tc.edit(dualDiskParts()), nil }
-			if _, err := c.espMountpoint(); err == nil {
+			if _, err := stagingMount(c); err == nil {
 				t.Fatal("unsafe ESP accepted")
 			}
 		})
@@ -134,7 +151,7 @@ func TestESPReusesVerifiedMount(t *testing.T) {
 			c.mountInfoFn = func(p string) (mountInfo, bool, error) {
 				return mountInfo{Source: "/dev/disk/by-partuuid/alias", DeviceID: "259:11", FSType: "vfat", Options: "rw,relatime"}, p == path, nil
 			}
-			got, err := c.espMountpoint()
+			got, err := stagingMount(c)
 			if err != nil || got != path {
 				t.Fatalf("got %s, %v", got, err)
 			}
@@ -153,7 +170,7 @@ func TestESPMountValidation(t *testing.T) {
 			c.mountInfoFn = func(p string) (mountInfo, bool, error) {
 				return mountInfo{Source: "fixture", DeviceID: tc.id, FSType: tc.fs, Options: tc.opts}, p == c.RootDir+tc.where, nil
 			}
-			if _, err := c.espMountpoint(); err == nil {
+			if _, err := stagingMount(c); err == nil {
 				t.Fatal("unsafe mounted ESP accepted")
 			}
 		})
@@ -222,8 +239,8 @@ func TestESPStagingAndCleanupLeaveOtherDiskUntouched(t *testing.T) {
 	}
 }
 
-func TestReadinessDoesNotMountESP(t *testing.T) {
-	c := storageController(t)
+func writeRunningCapsule(t *testing.T, c *Controller) {
+	t.Helper()
 	for _, path := range []string{MarkerPath, CapsuleSrcPath} {
 		file := c.RootDir + path
 		if err := os.MkdirAll(filepath.Dir(file), 0755); err != nil {
@@ -233,16 +250,73 @@ func TestReadinessDoesNotMountESP(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	checks := c.CheckReadiness()
-	for _, check := range checks {
+}
+
+func headroomCheck(t *testing.T, c *Controller) connector.Check {
+	t.Helper()
+	for _, check := range c.CheckReadiness() {
 		if check.Name == "ESP capsule headroom" {
-			if check.OK || !strings.Contains(check.Detail, "not mounted") {
-				t.Fatalf("unknown free space must be explicit: %+v", check)
-			}
-			return
+			return check
 		}
 	}
 	t.Fatal("ESP check missing")
+	return connector.Check{}
+}
+
+// `check` measures an ESP that staging would mount privately, but never
+// mounts it read-write to do so.
+func TestReadinessMeasuresUnmountedESPReadOnly(t *testing.T) {
+	c := storageController(t)
+	writeRunningCapsule(t, c)
+	released := false
+	c.mountESPReadOnlyFn = func(dev string) (string, func(), error) {
+		if dev != "/dev/nvme0n1p11" {
+			t.Fatalf("measured the wrong ESP: %s", dev)
+		}
+		return t.TempDir(), func() { released = true }, nil
+	}
+	if check := headroomCheck(t, c); !check.OK {
+		t.Fatalf("unmounted ESP with free space reported not ready: %+v", check)
+	}
+	if !released {
+		t.Fatal("measurement mount was not released")
+	}
+
+	c = storageController(t)
+	writeRunningCapsule(t, c)
+	c.mountESPReadOnlyFn = func(string) (string, func(), error) { return "", nil, errors.New("permission denied") }
+	if check := headroomCheck(t, c); check.OK || !strings.Contains(check.Detail, "read-only") {
+		t.Fatalf("an unmeasurable ESP must be explicit: %+v", check)
+	}
+}
+
+// An ESP already mounted somewhere other than /boot/efi is measured there.
+func TestReadinessMeasuresESPMountedElsewhere(t *testing.T) {
+	c := storageController(t)
+	writeRunningCapsule(t, c)
+	dir := filepath.Join(c.RootDir, "efi")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(dir, &st); err != nil {
+		t.Fatal(err)
+	}
+	id := fmt.Sprintf("%d:%d", unix.Major(uint64(st.Dev)), unix.Minor(uint64(st.Dev)))
+	c.listPartsFn = func() ([]partitionInfo, error) {
+		p := dualDiskParts()
+		p[7].DeviceID = id
+		return p, nil
+	}
+	c.deviceMountsFn = func(got string) ([]string, error) {
+		if got != id {
+			t.Fatalf("looked up mounts of %s, want %s", got, id)
+		}
+		return []string{"/elsewhere", "/efi"}, nil
+	}
+	if check := headroomCheck(t, c); !check.OK {
+		t.Fatalf("ESP mounted elsewhere reported not ready: %+v", check)
+	}
 }
 
 func TestESPOnEMMCAndSingleDiskThor(t *testing.T) {
@@ -279,7 +353,7 @@ func TestESPMountRechecksDeviceAndUnmountsOnMismatch(t *testing.T) {
 	c.mountInfoFn = func(path string) (mountInfo, bool, error) {
 		return mountInfo{Source: "/dev/mmcblk0p10", DeviceID: "179:10", FSType: "vfat", Options: "rw"}, mounted && path == c.privateESPMountpoint(), nil
 	}
-	if _, err := c.espMountpoint(); err == nil {
+	if _, err := stagingMount(c); err == nil {
 		t.Fatal("post-mount mismatch accepted")
 	}
 	if !cleaned {
@@ -287,8 +361,8 @@ func TestESPMountRechecksDeviceAndUnmountsOnMismatch(t *testing.T) {
 	}
 }
 
-// Exercise the actual command/JSON readers, including nullable lsblk columns
-// and a /dev/root source alias. The root identity must come from MAJ:MIN.
+// Exercise the actual command/JSON readers, including nullable lsblk columns,
+// stacked mounts and the string IDs older util-linux prints.
 func TestStorageCommandJSONReaders(t *testing.T) {
 	bin := t.TempDir()
 	command := func(name, body string) {
@@ -298,17 +372,11 @@ func TestStorageCommandJSONReaders(t *testing.T) {
 		}
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	command("lsblk", `test "$*" = '--json --list --paths --output PATH,PKNAME,PARTLABEL,TYPE,FSTYPE,MAJ:MIN' || exit 2
-printf '%s\n' '{"blockdevices":[{"path":"/dev/nvme0n1","pkname":null,"partlabel":null,"type":"disk","fstype":null,"maj:min":"259:0"},{"path":"/dev/nvme0n1p1","pkname":"/dev/nvme0n1","partlabel":"APP","type":"part","fstype":"ext4","maj:min":"259:1"}]}'`)
+	command("lsblk", `test "$*" = '--json --list --paths --output PATH,PKNAME,PARTLABEL,PARTUUID,TYPE,FSTYPE,MAJ:MIN' || exit 2
+printf '%s\n' '{"blockdevices":[{"path":"/dev/nvme0n1","pkname":null,"partlabel":null,"partuuid":null,"type":"disk","fstype":null,"maj:min":"259:0"},{"path":"/dev/nvme0n1p1","pkname":"/dev/nvme0n1","partlabel":"APP","partuuid":"a1b2c3d4-0000-4000-8000-000000000001","type":"part","fstype":"ext4","maj:min":"259:1"}]}'`)
 	parts, err := listPartitions()
-	if err != nil || len(parts) != 2 || parts[0].Parent != "" || parts[1].DeviceID != "259:1" {
+	if err != nil || len(parts) != 2 || parts[0].Parent != "" || parts[1].DeviceID != "259:1" || parts[1].PartUUID == "" {
 		t.Fatalf("lsblk parsed %+v, %v", parts, err)
-	}
-	command("findmnt", `test "$*" = '--json --output SOURCE,TARGET,FSTYPE,OPTIONS,MAJ:MIN --mountpoint /' || exit 2
-printf '%s\n' '{"filesystems":[{"source":"/dev/root","target":"/","fstype":"ext4","options":"rw,relatime","maj:min":"259:1"}]}'`)
-	root, err := currentRootID()
-	if err != nil || root != "259:1" {
-		t.Fatalf("root ID=%q, %v", root, err)
 	}
 	command("findmnt", "exit 1")
 	if _, found, err := mountedFilesystem("/boot/efi"); found || err != nil {
@@ -318,9 +386,25 @@ printf '%s\n' '{"filesystems":[{"source":"/dev/root","target":"/","fstype":"ext4
 	if _, _, err := mountedFilesystem("/boot/efi"); err == nil {
 		t.Fatal("findmnt error treated as absent mount")
 	}
-	command("findmnt", `printf '%s\n' '{"filesystems":[{"source":"/dev/root","target":"/","fstype":"ext4","options":"rw","maj:min":"259:1"}]}'`)
+	command("findmnt", `printf '%s\n' '{"filesystems":[{"id":1,"parent":0,"source":"/dev/root","target":"/","fstype":"ext4","options":"rw","maj:min":"259:1"}]}'`)
 	if _, _, err := mountedFilesystem("/boot/efi"); err == nil {
 		t.Fatal("containing filesystem accepted as exact mount")
+	}
+	for _, ids := range [][2]string{{"41", "113"}, {`"41"`, `"113"`}} {
+		command("findmnt", `test "$*" = '--json --output ID,PARENT,SOURCE,TARGET,FSTYPE,OPTIONS,MAJ:MIN --mountpoint /boot/efi' || exit 2
+printf '%s\n' '{"filesystems":[{"id":`+ids[0]+`,"parent":29,"source":"systemd-1","target":"/boot/efi","fstype":"autofs","options":"rw","maj:min":"0:35"},{"id":`+ids[1]+`,"parent":`+ids[0]+`,"source":"/dev/nvme0n1p11","target":"/boot/efi","fstype":"vfat","options":"rw,relatime","maj:min":"259:11"}]}'`)
+		if m, found, err := mountedFilesystem("/boot/efi"); !found || err != nil || m.DeviceID != "259:11" {
+			t.Fatalf("stacked mount ids %v: got %+v, found=%t, err=%v; want the top vfat mount", ids, m, found, err)
+		}
+	}
+	command("findmnt", `printf '%s\n' '{"filesystems":[{"id":41,"parent":29,"source":"a","target":"/boot/efi","fstype":"vfat","options":"rw","maj:min":"259:11"},{"id":42,"parent":29,"source":"b","target":"/boot/efi","fstype":"vfat","options":"rw","maj:min":"179:10"}]}'`)
+	if _, _, err := mountedFilesystem("/boot/efi"); err == nil {
+		t.Fatal("two uncovered mounts at one path accepted")
+	}
+	command("findmnt", `test "$*" = '--json --list --output ID,PARENT,SOURCE,TARGET,FSTYPE,OPTIONS,MAJ:MIN' || exit 2
+printf '%s\n' '{"filesystems":[{"id":1,"parent":0,"source":"/dev/nvme0n1p1","target":"/","fstype":"ext4","options":"rw","maj:min":"259:1"},{"id":2,"parent":1,"source":"/dev/nvme0n1p11","target":"/efi","fstype":"vfat","options":"rw","maj:min":"259:11"}]}'`)
+	if dirs, err := deviceMountpoints("259:11"); err != nil || len(dirs) != 1 || dirs[0] != "/efi" {
+		t.Fatalf("device mounts = %q, %v", dirs, err)
 	}
 	command("lsblk", "echo not-json")
 	if _, err := listPartitions(); err == nil {
@@ -349,4 +433,127 @@ func TestReadinessRejectsPendingCapsuleBootChain(t *testing.T) {
 		}
 	}
 	t.Fatal("capsule boot-chain state check missing")
+}
+
+// Finding the ESP needs only the root's disk; a firmware slot that cannot be
+// read or disagrees with the root must not hide it.
+func TestESPResolutionDoesNotNeedFirmwareSlot(t *testing.T) {
+	for _, tc := range []struct{ name, rootID, nvbootctrl string }{
+		{"nvbootctrl missing", "259:1", ""},
+		{"firmware slot disagrees with root", "259:2", "0\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := storageController(t)
+			c.rootIDFn = func() (string, error) { return tc.rootID, nil }
+			c.Nvbootctrl = filepath.Join(t.TempDir(), "absent")
+			if tc.nvbootctrl != "" {
+				c.Nvbootctrl = fakeNvbootctrl(t, tc.nvbootctrl)
+			}
+			if esp, err := c.espPartition(); err != nil || esp.Path != "/dev/nvme0n1p11" {
+				t.Fatalf("ESP = %+v, %v", esp, err)
+			}
+			if dev, err := c.PartitionFor(connector.SlotB); err == nil {
+				t.Fatalf("slot resolved without a verified firmware slot: %s", dev)
+			}
+		})
+	}
+}
+
+func notPartition() (string, error) {
+	return "", fmt.Errorf("root is overlay: %w", blockdev.ErrNotPartition)
+}
+
+// A root with no backing partition has no disk to scope to: a label is used
+// only when no other disk carries it.
+func TestRootWithoutBackingPartitionNeedsUniqueLabels(t *testing.T) {
+	c := storageController(t)
+	c.rootIDFn = notPartition
+	c.listPartsFn = func() ([]partitionInfo, error) { return dualDiskParts()[4:], nil }
+	for slot, want := range map[connector.Slot]string{connector.SlotA: "/dev/nvme0n1p1", connector.SlotB: "/dev/nvme0n1p2"} {
+		if got, err := c.PartitionFor(slot); err != nil || got != want {
+			t.Fatalf("single disk slot %s = %q, %v; want %s", slot, got, err, want)
+		}
+	}
+	if esp, err := c.espPartition(); err != nil || esp.Path != "/dev/nvme0n1p11" {
+		t.Fatalf("single disk ESP = %+v, %v", esp, err)
+	}
+
+	c = storageController(t)
+	c.rootIDFn = notPartition
+	if dev, err := c.PartitionFor(connector.SlotB); err == nil {
+		t.Fatalf("ambiguous label accepted: %s", dev)
+	}
+	if esp, err := c.espPartition(); err == nil {
+		t.Fatalf("ambiguous ESP accepted: %+v", esp)
+	}
+}
+
+// When lsblk reads no partition names on the boot disk, the slots are the
+// adjacent partitions there, never a partition on another disk.
+func TestUnlabelledBootDiskUsesAdjacentPartitions(t *testing.T) {
+	unlabelled := func() ([]partitionInfo, error) {
+		p := dualDiskParts()
+		for i := 5; i <= 7; i++ {
+			p[i].PartLabel = ""
+		}
+		return p, nil
+	}
+	for _, tc := range []struct{ name, rootID, slot, a, b string }{
+		{"running A", "259:1", "0\n", "/dev/nvme0n1p1", "/dev/nvme0n1p2"},
+		{"running B", "259:2", "1\n", "/dev/nvme0n1p1", "/dev/nvme0n1p2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := storageController(t)
+			c.rootIDFn = func() (string, error) { return tc.rootID, nil }
+			c.Nvbootctrl = fakeNvbootctrl(t, tc.slot)
+			c.listPartsFn = unlabelled
+			for slot, want := range map[connector.Slot]string{connector.SlotA: tc.a, connector.SlotB: tc.b} {
+				if got, err := c.PartitionFor(slot); err != nil || got != want {
+					t.Fatalf("slot %s = %q, %v; want %s", slot, got, err, want)
+				}
+			}
+		})
+	}
+	t.Run("labels elsewhere on the boot disk", func(t *testing.T) {
+		c := storageController(t)
+		c.listPartsFn = func() ([]partitionInfo, error) {
+			p := dualDiskParts()
+			p[5].PartLabel = ""
+			return p, nil
+		}
+		if dev, err := c.PartitionFor(connector.SlotB); err == nil {
+			t.Fatalf("unlabelled root on a labelled disk accepted: %s", dev)
+		}
+	})
+}
+
+// One command reads the inventory once, however many lookups it makes; a
+// failed read is not remembered.
+func TestLayoutIsReadOncePerCommand(t *testing.T) {
+	c := storageController(t)
+	scans, roots := 0, 0
+	fail := true
+	c.listPartsFn = func() ([]partitionInfo, error) {
+		scans++
+		if fail {
+			return nil, errors.New("lsblk failed")
+		}
+		return dualDiskParts(), nil
+	}
+	c.rootIDFn = func() (string, error) { roots++; return "259:1", nil }
+	if _, err := c.espPartition(); err == nil {
+		t.Fatal("failed inventory accepted")
+	}
+	fail = false
+	for _, slot := range []connector.Slot{connector.SlotA, connector.SlotB} {
+		if _, err := c.PartitionFor(slot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := c.capsuleESP(); err != nil {
+		t.Fatal(err)
+	}
+	if scans != 2 || roots != 1 {
+		t.Fatalf("inventory read %d times and root %d times, want 2 and 1", scans, roots)
+	}
 }

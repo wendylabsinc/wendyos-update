@@ -75,22 +75,28 @@ type Controller struct {
 
 	// mountFn mounts a slot's rootfs read-only and returns the mount
 	// dir plus an unmount func. Tests substitute a tempdir binder.
-	mountFn     func(dev string) (string, func(), error)
-	rootIDFn    func() (string, error)
-	listPartsFn func() ([]partitionInfo, error)
-	mountInfoFn func(path string) (mountInfo, bool, error)
-	mountESPFn  func(dev string) (string, func(), error)
+	mountFn            func(dev string) (string, func(), error)
+	rootIDFn           func() (string, error)
+	listPartsFn        func() ([]partitionInfo, error)
+	mountInfoFn        func(path string) (mountInfo, bool, error)
+	mountESPFn         func(dev string) (string, func(), error)
+	deviceMountsFn     func(id string) ([]string, error)
+	mountESPReadOnlyFn func(dev string) (string, func(), error)
+
+	cachedLayout *bootLayout
 }
 
 func New() *Controller {
 	c := &Controller{
-		Nvbootctrl:  "nvbootctrl",
-		EfivarsDir:  "/sys/firmware/efi/efivars",
-		RootDir:     "",
-		mountFn:     defaultMount,
-		rootIDFn:    currentRootID,
-		listPartsFn: listPartitions,
-		mountInfoFn: mountedFilesystem,
+		Nvbootctrl:         "nvbootctrl",
+		EfivarsDir:         "/sys/firmware/efi/efivars",
+		RootDir:            "",
+		mountFn:            defaultMount,
+		rootIDFn:           rootPartitionID,
+		listPartsFn:        listPartitions,
+		mountInfoFn:        mountedFilesystem,
+		deviceMountsFn:     deviceMountpoints,
+		mountESPReadOnlyFn: mountVfatReadOnly,
 	}
 	c.mountESPFn = c.mountVfat
 	return c
@@ -135,13 +141,14 @@ func partlabelFor(s connector.Slot) string {
 }
 
 // PartitionFor resolves the slot on the disk containing the running root.
-// Global by-partlabel links are ambiguous when eMMC and NVMe both carry APP.
-// Refuse unknown layouts rather than risk writing an unrelated disk.
+// Global by-partlabel links are ambiguous when eMMC and NVMe both carry APP,
+// so a label is used globally only when the root has no disk and no other
+// disk shares it. Refuse anything else rather than risk an unrelated disk.
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
 	if s != connector.SlotA && s != connector.SlotB {
 		return "", fmt.Errorf("invalid slot %d", s)
 	}
-	part, err := c.partitionOnBootDisk([]string{partlabelFor(s)})
+	part, err := c.slotPartition(s)
 	if err != nil {
 		return "", fmt.Errorf("partition for slot %s: %w", s, err)
 	}
@@ -288,28 +295,34 @@ func (c *Controller) rootfsRedundancyArmed() (bool, error) {
 // actionable message instead of downloading, writing, rebooting, then rolling
 // back.
 func (c *Controller) PreflightInstall() error {
-	if c.capsuleUpdateEffective() {
-		if _, err := os.Stat(c.RootDir + MarkerPath); err == nil {
-			esp, err := c.espPartition()
-			if err != nil {
-				return err
-			}
-			if _, err := c.existingESPMount(esp); err != nil {
-				return err
-			}
-			if err := c.checkCapsuleBootChainIdle(); err != nil {
-				return err
-			}
-		}
-	}
-	// Advisory: a full ESP does not stop the install, but it does decide it
-	// long before anyone finds out, so say so now rather than after 16 GB.
-	// `wendyos-update check` reports the same condition as a failure.
-	if err := c.espCapsuleHeadroom(); err != nil {
+	// Advisory: these are judged from the RUNNING image, but the incoming one
+	// decides whether a capsule is staged. SwapSlot enforces them; `check` fails.
+	if err := c.capsuleStagingReady(); err != nil {
+		slog.Warn("preflight: " + err.Error())
+	} else if err := c.espCapsuleHeadroom(); err != nil {
 		slog.Warn("preflight: " + err.Error())
 	}
 
 	return c.rootfsRedundancyReady()
+}
+
+// capsuleStagingReady reports what SwapSlot would refuse a capsule over, when
+// the running image requests capsule updates.
+func (c *Controller) capsuleStagingReady() error {
+	if !c.capsuleUpdateEffective() {
+		return nil
+	}
+	if _, err := os.Stat(c.RootDir + MarkerPath); err != nil {
+		return nil
+	}
+	esp, err := c.capsuleESP()
+	if err != nil {
+		return err
+	}
+	if _, err := c.existingESPMount(esp); err != nil {
+		return err
+	}
+	return c.checkCapsuleBootChainIdle()
 }
 
 // rootfsRedundancyReady reports whether a rootfs slot switch can take effect.
@@ -366,9 +379,8 @@ const espHeadroomMargin = 1 << 20
 // against what is already staged: copyFileSync writes a temp file and renames,
 // so the old capsule still holds its clusters while the new one is written.
 //
-// Only inspect an existing, verified ESP mount. `check` must not mount a disk
-// read-write just to estimate capacity. An unmounted ESP reports an unknown
-// capacity; install treats that as advisory and mounts it during staging.
+// The ESP is measured where staging would find it, else through any other
+// mount or a temporary read-only one: `check` must never write to the ESP.
 func (c *Controller) espCapsuleHeadroom() error {
 	if !c.capsuleUpdateEffective() {
 		return nil
@@ -382,7 +394,7 @@ func (c *Controller) espCapsuleHeadroom() error {
 	}
 	need := fi.Size() + espHeadroomMargin
 
-	esp, err := c.espPartition()
+	esp, err := c.capsuleESP()
 	if err != nil {
 		return err
 	}
@@ -391,7 +403,12 @@ func (c *Controller) espCapsuleHeadroom() error {
 		return err
 	}
 	if espDir == "" {
-		return fmt.Errorf("ESP %s is not mounted; capsule free space has not been checked", esp.Path)
+		dir, release, err := c.espMeasureMount(esp)
+		if err != nil {
+			return err
+		}
+		defer release()
+		espDir = dir
 	}
 	var st unix.Statfs_t
 	if err := unix.Statfs(espDir, &st); err != nil {
@@ -401,7 +418,7 @@ func (c *Controller) espCapsuleHeadroom() error {
 		return fmt.Errorf("the ESP (%s) has %d bytes free but staging the bootloader "+
 			"capsule needs %d (capsule %d + margin): the install would run to completion "+
 			"and then fail at the last step. Free space on the ESP, or reflash to pick up "+
-			"a larger one", espDir, free, need, fi.Size())
+			"a larger one", esp.Path, free, need, fi.Size())
 	}
 	return nil
 }
