@@ -295,11 +295,15 @@ func (c *Controller) rootfsRedundancyArmed() (bool, error) {
 // actionable message instead of downloading, writing, rebooting, then rolling
 // back.
 func (c *Controller) PreflightInstall() error {
-	// Advisory: these are judged from the RUNNING image, but the incoming one
-	// decides whether a capsule is staged. SwapSlot enforces them; `check` fails.
+	// Judged from the RUNNING image's marker: images of one lineage all ship
+	// the capsule, so a staging refusal here is certain after a full slot write.
 	if err := c.capsuleStagingReady(); err != nil {
-		slog.Warn("preflight: " + err.Error())
-	} else if err := c.espCapsuleHeadroom(); err != nil {
+		return err
+	}
+	// Advisory: a full ESP does not stop the install, but it does decide it
+	// long before anyone finds out, so say so now rather than after 16 GB.
+	// `wendyos-update check` reports the same condition as a failure.
+	if err := c.espCapsuleHeadroom(); err != nil {
 		slog.Warn("preflight: " + err.Error())
 	}
 

@@ -379,9 +379,9 @@ func TestMarkGoodNoBookkeeping(t *testing.T) {
 	}
 }
 
-// Capsule conditions are judged from the RUNNING image, so preflight only
-// warns: the incoming image may be rootfs-only. Staging still refuses them.
-func TestPreflightCapsuleStateIsAdvisory(t *testing.T) {
+// A capsule the staging step would refuse is refused before the slot is
+// written; an image that requests no capsule is not held to it.
+func TestPreflightRefusesCapsuleStagingProblems(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		edit func(t *testing.T, c *Controller)
@@ -397,25 +397,15 @@ func TestPreflightCapsuleStateIsAdvisory(t *testing.T) {
 			c := storageController(t)
 			writeRunningCapsule(t, c)
 			tc.edit(t, c)
-			if err := c.PreflightInstall(); err != nil {
-				t.Fatalf("rootfs-only update refused over capsule state: %v", err)
+			if err := c.PreflightInstall(); err == nil {
+				t.Fatal("install allowed although capsule staging would be refused")
 			}
-			if err := c.capsuleStagingReady(); err == nil {
-				t.Fatal("capsule condition not detected")
+
+			c = storageController(t)
+			tc.edit(t, c)
+			if err := c.PreflightInstall(); err != nil {
+				t.Fatalf("image without a capsule refused: %v", err)
 			}
 		})
-	}
-
-	c := storageController(t)
-	logPath := filepath.Join(t.TempDir(), "calls.log")
-	c.Nvbootctrl = recordingNvbootctrl(t, logPath, "0\n")
-	writeCompatible(t, c, "nvidia,tegra234")
-	installSwapSetup(t, c, connector.SlotB, true)
-	bootChainTestVar(t, c, "BootChainFwNext", 0)
-	if err := c.SwapSlot(connector.SlotB, true); err == nil {
-		t.Fatal("capsule staged over a pending boot-chain request")
-	}
-	if calls, _ := os.ReadFile(logPath); strings.Contains(string(calls), "set-active-boot-slot") {
-		t.Fatalf("refused capsule still switched the slot: %s", calls)
 	}
 }
