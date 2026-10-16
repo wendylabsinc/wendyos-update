@@ -273,7 +273,11 @@ func (e *Engine) Check() []connector.Check {
 }
 
 func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
-	cur, err := e.Conn.CurrentSlot()
+	var conn connector.StatusReader = e.Conn
+	if snapshots, ok := e.Conn.(connector.StatusSnapshotter); ok {
+		conn = snapshots.StatusSnapshot()
+	}
+	cur, err := conn.CurrentSlot()
 	if err != nil {
 		return nil, err
 	}
@@ -285,10 +289,10 @@ func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
 	var slots []SlotState
 	for _, s := range []connector.Slot{connector.SlotA, connector.SlotB} {
 		ss := SlotState{Slot: s.String(), Booted: s == cur}
-		if dev, err := e.Conn.PartitionFor(s); err == nil {
+		if dev, err := conn.PartitionFor(s); err == nil {
 			ss.Partition = dev
 		}
-		h := e.Conn.SlotStatus(s)
+		h := conn.SlotStatus(s)
 		ss.RootfsHealth, ss.Retries, ss.Note = h.RootfsHealth, h.Retries, h.Note
 		// Distro/kernel: live for the booted slot; a read-only mount of the
 		// inactive slot otherwise (best-effort — empty if not root/unreadable).
@@ -301,16 +305,16 @@ func (e *Engine) Status(verbose bool) (*StatusInfo, error) {
 	}
 
 	return &StatusInfo{
-		Connector:   e.Conn.Name(),
+		Connector:   conn.Name(),
 		CurrentSlot: cur.String(),
 		Slots:       slots,
-		System:      e.Conn.SystemStatus(),
+		System:      conn.SystemStatus(),
 		Pending:     st,
 		// Kept in --json unconditionally for back-compat (the contract is
 		// additive-only): the new slots/system are added alongside it, not
 		// in place of it. `verbose` only enriches the map with the raw
 		// EFI/slot snapshot; the human view shows it only under --verbose.
-		Diagnostics: e.Conn.Diagnostics(verbose),
+		Diagnostics: conn.Diagnostics(verbose),
 	}, nil
 }
 

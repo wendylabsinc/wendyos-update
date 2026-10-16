@@ -173,3 +173,21 @@ type KV struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
 }
+
+// StatusReader is the read-only portion of a connector used by one status
+// request. It deliberately excludes operations that can change boot state.
+type StatusReader interface {
+	Name() string
+	CurrentSlot() (Slot, error)
+	PartitionFor(Slot) (string, error)
+	Diagnostics(verbose bool) map[string]string
+	SlotStatus(Slot) SlotStatus
+	SystemStatus() []KV
+}
+
+// StatusSnapshotter optionally shares expensive observations within a single
+// status request. Each call must return a fresh view without caching state on
+// the original connector, which may subsequently install or switch slots.
+type StatusSnapshotter interface {
+	StatusSnapshot() StatusReader
+}
