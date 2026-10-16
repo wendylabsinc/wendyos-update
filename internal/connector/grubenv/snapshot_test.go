@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
@@ -109,14 +108,15 @@ func TestStatusSnapshotRetainsResolutionFailuresAndFallback(t *testing.T) {
 	}
 }
 
-func TestLSBlkArgsScopeToKernelPartitionParent(t *testing.T) {
+func TestRootDiskDeviceFromKernelTopology(t *testing.T) {
 	for _, tc := range []struct{ partition, disk string }{
 		{"sda3", "sda"}, {"nvme0n1p2", "nvme0n1"}, {"mmcblk0p3", "mmcblk0"},
 	} {
 		t.Run(tc.partition, func(t *testing.T) {
 			dir := t.TempDir()
-			class := filepath.Join(dir, "sys/class/block")
-			real := filepath.Join(dir, "sys/devices/platform/block", tc.disk, tc.partition)
+			sysfs := filepath.Join(dir, "sys")
+			class := filepath.Join(sysfs, "class/block")
+			real := filepath.Join(sysfs, "devices/platform/block", tc.disk, tc.partition)
 			for _, path := range []string{class, real} {
 				if err := os.MkdirAll(path, 0o755); err != nil {
 					t.Fatal(err)
@@ -128,9 +128,9 @@ func TestLSBlkArgsScopeToKernelPartitionParent(t *testing.T) {
 			if err := os.Symlink(real, filepath.Join(class, tc.partition)); err != nil {
 				t.Fatal(err)
 			}
-			want := []string{"-Pno", "PATH,PARTLABEL,LABEL,PKNAME", "--", "/dev/" + tc.disk}
-			if got := lsblkArgs("/dev/"+tc.partition, class); !reflect.DeepEqual(got, want) {
-				t.Fatalf("args = %q, want %q", got, want)
+			want := "/dev/" + tc.disk
+			if got := rootDiskDevice("/dev/"+tc.partition, sysfs); got != want {
+				t.Fatalf("disk = %q, want %q", got, want)
 			}
 			// findmnt can report /dev/root or another symlink to the partition.
 			device := filepath.Join(dir, tc.partition)
@@ -141,15 +141,16 @@ func TestLSBlkArgsScopeToKernelPartitionParent(t *testing.T) {
 			if err := os.Symlink(device, alias); err != nil {
 				t.Fatal(err)
 			}
-			if got := lsblkArgs(alias, class); !reflect.DeepEqual(got, want) {
-				t.Fatalf("alias args = %q, want %q", got, want)
+			if got := rootDiskDevice(alias, sysfs); got != want {
+				t.Fatalf("alias disk = %q, want %q", got, want)
 			}
 		})
 	}
 }
 
-func TestLSBlkArgsRetainFullScanForUnknownTopology(t *testing.T) {
-	class := t.TempDir()
+func TestRootDiskDeviceRetainsFullScanForUnknownTopology(t *testing.T) {
+	sysfs := t.TempDir()
+	class := filepath.Join(sysfs, "class/block")
 	for _, root := range []string{"", "/dev/missing", "/dev/dm-0", "/dev/sda"} {
 		// Stacked and whole-disk roots have no partition attribute in sysfs.
 		if root != "" {
@@ -157,9 +158,35 @@ func TestLSBlkArgsRetainFullScanForUnknownTopology(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		want := []string{"-Pno", "PATH,PARTLABEL,LABEL,PKNAME"}
-		if got := lsblkArgs(root, class); !reflect.DeepEqual(got, want) {
-			t.Fatalf("root %q args = %q, want full scan", root, got)
+		if got := rootDiskDevice(root, sysfs); got != "" {
+			t.Fatalf("root %q scoped to %q, want a full scan", root, got)
+		}
+	}
+}
+
+// A scoped scan that fails, e.g. on a disk whose /dev node differs from its
+// kernel name, must fall back to the full scan rather than to global labels.
+func TestScopedScanFailureFallsBackToFullScan(t *testing.T) {
+	bin := t.TempDir()
+	script := `#!/bin/sh
+case "$*" in
+*" -- /dev/broken") exit 32 ;;
+*" -- /dev/nvme0n1") echo 'PATH="/dev/nvme0n1p3" PARTLABEL="rootfsA" LABEL="" PKNAME="nvme0n1"' ;;
+*) echo 'PATH="/dev/sda3" PARTLABEL="rootfsA" LABEL="" PKNAME="sda"'
+   echo 'PATH="/dev/nvme0n1p3" PARTLABEL="rootfsA" LABEL="" PKNAME="nvme0n1"' ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "lsblk"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	for _, tc := range []struct {
+		disk string
+		want int
+	}{{"/dev/nvme0n1", 1}, {"/dev/broken", 2}, {"", 2}} {
+		parts, err := lsblkPartsOn(tc.disk)
+		if err != nil || len(parts) != tc.want {
+			t.Fatalf("disk %q: %d parts, %v; want %d", tc.disk, len(parts), err, tc.want)
 		}
 	}
 }

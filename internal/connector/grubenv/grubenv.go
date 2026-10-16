@@ -40,6 +40,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/wendylabsinc/wendyos-update/internal/blockdev"
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
@@ -125,11 +126,12 @@ var _ connector.StatusSnapshotter = (*Controller)(nil)
 
 func (c *Controller) Name() string { return "grubenv" }
 
-// StatusSnapshot reuses the root and partition observations for one status
-// request, including its verbose diagnostics. Keep this state on a copy: an
-// install or a later status request must observe the device again.
+// StatusSnapshot reuses the root, partition and GRUB env observations for one
+// status request, including its verbose diagnostics. Keep this state on a
+// copy: an install or a later status request must observe the device again.
 func (c *Controller) StatusSnapshot() connector.StatusReader {
 	view := *c
+	view.env = &envSnapshot{store: c.env, reads: make(map[string]envRead)}
 	root, rootErr := c.rootDeviceFn()
 	view.rootDeviceFn = func() (string, error) { return root, rootErr }
 	if rootErr != nil {
@@ -138,6 +140,31 @@ func (c *Controller) StatusSnapshot() connector.StatusReader {
 	parts, partsErr := c.listPartsFn(root)
 	view.listPartsFn = func(string) ([]partInfo, error) { return parts, partsErr }
 	return &view
+}
+
+// envSnapshot reads each variable once per status request. Status never
+// writes the env, so a write through a snapshot is a bug.
+type envSnapshot struct {
+	store envStore
+	reads map[string]envRead
+}
+
+type envRead struct {
+	value string
+	err   error
+}
+
+func (e *envSnapshot) get(name string) (string, error) {
+	r, ok := e.reads[name]
+	if !ok {
+		r.value, r.err = e.store.get(name)
+		e.reads[name] = r
+	}
+	return r.value, r.err
+}
+
+func (e *envSnapshot) set(map[string]string) error {
+	return fmt.Errorf("grubenv: a status snapshot is read-only")
 }
 
 // --- grub-editenv-backed envStore ---
@@ -279,11 +306,24 @@ func canon(dev string) string {
 	return dev
 }
 
-// lsblkParts lists the running root's disk when sysfs identifies its parent.
-// Reading filesystem labels across unrelated firmware disks can take seconds
-// on Qualcomm boards. Unknown/stacked layouts retain the original full scan.
+// lsblkParts lists the running root's disk when sysfs identifies it. Reading
+// filesystem labels across unrelated firmware disks can take seconds on
+// Qualcomm boards. Unknown layouts, or a failed scoped scan, scan every disk.
 func lsblkParts(root string) ([]partInfo, error) {
-	out, err := exec.Command("lsblk", lsblkArgs(root, "/sys/class/block")...).Output()
+	return lsblkPartsOn(rootDiskDevice(root, "/sys"))
+}
+
+func lsblkPartsOn(disk string) ([]partInfo, error) {
+	if disk != "" {
+		if parts, err := runLsblk("--", disk); err == nil {
+			return parts, nil
+		}
+	}
+	return runLsblk()
+}
+
+func runLsblk(args ...string) ([]partInfo, error) {
+	out, err := exec.Command("lsblk", append([]string{"-Pno", "PATH,PARTLABEL,LABEL,PKNAME"}, args...)...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -302,35 +342,18 @@ func lsblkParts(root string) ([]partInfo, error) {
 	return parts, nil
 }
 
-func lsblkArgs(root, sysClassBlock string) []string {
-	args := []string{"-Pno", "PATH,PARTLABEL,LABEL,PKNAME"}
-	if disk := rootDiskDevice(root, sysClassBlock); disk != "" {
-		args = append(args, "--", disk)
-	}
-	return args
-}
-
-// rootDiskDevice reads the kernel's partition-parent relationship, without
-// guessing from names such as sda3/mmcblk0p2 or consulting ambiguous labels.
-// A device-mapper/whole-device root is not a partition; leave those layouts to
-// the existing full enumeration and boot-disk checks.
-func rootDiskDevice(root, sysClassBlock string) string {
+// rootDiskDevice returns the disk holding the root partition, from the
+// kernel's topology rather than device names or labels, or "" when the root
+// is not a partition and every disk must be scanned.
+func rootDiskDevice(root, sysfs string) string {
 	if root == "" {
 		return ""
 	}
-	entry := filepath.Join(sysClassBlock, filepath.Base(canon(root)))
-	if _, err := os.Stat(filepath.Join(entry, "partition")); err != nil {
-		return ""
-	}
-	resolved, err := filepath.EvalSymlinks(entry)
+	_, disk, err := blockdev.PartitionDisk(blockdev.SysfsByName(sysfs, filepath.Base(canon(root))))
 	if err != nil {
 		return ""
 	}
-	disk := filepath.Base(filepath.Dir(resolved))
-	if disk == "." || disk == "/" || disk == "block" {
-		return ""
-	}
-	return filepath.Join("/dev", disk)
+	return disk.Path
 }
 
 // lsblkField extracts KEY's value from an lsblk -P line (KEY="value" ...).
