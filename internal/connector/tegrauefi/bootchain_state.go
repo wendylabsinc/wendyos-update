@@ -88,6 +88,8 @@ func parseBootloaderSlots(out string) (current, active connector.Slot, err error
 // aborts with 0x1813 when either boot-chain variable exists, including value
 // zero. Clearing these here could discard an actual pending switch. The
 // operator must let that request finish and confirm the healthy boot first.
+// Firmware never deletes BootChainFwStatus; `nvbootctrl verify`, which
+// wendyos-update-verify.service runs every boot, deletes it whatever its value.
 // The pinned r39.2 implementation is BootChainCheckAndCancelUpdate:
 // https://github.com/NVIDIA/edk2-nvidia/blob/bd49b331a0bbdeef7a34c224a3767f77e36da0c4/Silicon/NVIDIA/Drivers/BootChainDxe/BootChainDxe.c#L223
 func (c *Controller) checkCapsuleBootChainIdle() error {

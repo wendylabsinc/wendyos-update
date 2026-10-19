@@ -23,6 +23,7 @@ type partitionInfo struct {
 	Parent    string `json:"pkname"`
 	PartLabel string `json:"partlabel"`
 	PartUUID  string `json:"partuuid"`
+	PartType  string `json:"parttype"`
 	Type      string `json:"type"`
 	FSType    string `json:"fstype"`
 	DeviceID  string `json:"maj:min"`
@@ -30,7 +31,7 @@ type partitionInfo struct {
 
 func listPartitions() ([]partitionInfo, error) {
 	out, err := exec.Command("lsblk", "--json", "--list", "--paths", "--output",
-		"PATH,PKNAME,PARTLABEL,PARTUUID,TYPE,FSTYPE,MAJ:MIN").Output()
+		"PATH,PKNAME,PARTLABEL,PARTUUID,PARTTYPE,TYPE,FSTYPE,MAJ:MIN").Output()
 	if err != nil {
 		return nil, fmt.Errorf("lsblk: %w", err)
 	}
@@ -364,13 +365,13 @@ func (c *Controller) espPartition() (partitionInfo, error) {
 }
 
 // capsuleESP is the ESP a capsule is staged on: the boot disk's, unless the
-// firmware booted from an ESP on another disk and would never read it.
+// firmware's boot order leads it to an ESP on another disk first.
 func (c *Controller) capsuleESP() (partitionInfo, error) {
 	esp, err := c.espPartition()
 	if err != nil {
 		return partitionInfo{}, err
 	}
-	if err := c.checkFirmwareBootDisk(esp); err != nil {
+	if err := c.checkFirmwareCapsuleDisk(esp); err != nil {
 		return partitionInfo{}, err
 	}
 	return esp, nil

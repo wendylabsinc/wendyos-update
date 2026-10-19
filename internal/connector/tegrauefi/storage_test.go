@@ -372,10 +372,10 @@ func TestStorageCommandJSONReaders(t *testing.T) {
 		}
 	}
 	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
-	command("lsblk", `test "$*" = '--json --list --paths --output PATH,PKNAME,PARTLABEL,PARTUUID,TYPE,FSTYPE,MAJ:MIN' || exit 2
-printf '%s\n' '{"blockdevices":[{"path":"/dev/nvme0n1","pkname":null,"partlabel":null,"partuuid":null,"type":"disk","fstype":null,"maj:min":"259:0"},{"path":"/dev/nvme0n1p1","pkname":"/dev/nvme0n1","partlabel":"APP","partuuid":"a1b2c3d4-0000-4000-8000-000000000001","type":"part","fstype":"ext4","maj:min":"259:1"}]}'`)
+	command("lsblk", `test "$*" = '--json --list --paths --output PATH,PKNAME,PARTLABEL,PARTUUID,PARTTYPE,TYPE,FSTYPE,MAJ:MIN' || exit 2
+printf '%s\n' '{"blockdevices":[{"path":"/dev/nvme0n1","pkname":null,"partlabel":null,"partuuid":null,"parttype":null,"type":"disk","fstype":null,"maj:min":"259:0"},{"path":"/dev/nvme0n1p1","pkname":"/dev/nvme0n1","partlabel":"APP","partuuid":"a1b2c3d4-0000-4000-8000-000000000001","parttype":"0fc63daf-8483-4772-8e79-3d69d8477de4","type":"part","fstype":"ext4","maj:min":"259:1"}]}'`)
 	parts, err := listPartitions()
-	if err != nil || len(parts) != 2 || parts[0].Parent != "" || parts[1].DeviceID != "259:1" || parts[1].PartUUID == "" {
+	if err != nil || len(parts) != 2 || parts[0].Parent != "" || parts[1].DeviceID != "259:1" || parts[1].PartUUID == "" || parts[1].PartType == "" {
 		t.Fatalf("lsblk parsed %+v, %v", parts, err)
 	}
 	command("findmnt", "exit 1")
