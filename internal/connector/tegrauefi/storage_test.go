@@ -118,6 +118,22 @@ func TestPartitionForFailsClosed(t *testing.T) {
 	})
 }
 
+// The refusal reaches an operator through the agent, so it must say what is
+// inconsistent and how to get out of it.
+func TestSlotMismatchRefusalExplainsItself(t *testing.T) {
+	c := storageController(t)
+	c.rootIDFn = func() (string, error) { return "259:2", nil }
+	_, err := c.PartitionFor(connector.SlotA)
+	if err == nil {
+		t.Fatal("mismatch accepted")
+	}
+	for _, want := range []string{"/dev/nvme0n1p2", "APP_b", "slot A", "neither slot", "nvbootctrl dump-slots-info", "reflash"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
 func TestESPResolutionRejectsMissingOrAmbiguousLayout(t *testing.T) {
 	for _, tc := range []struct {
 		name string

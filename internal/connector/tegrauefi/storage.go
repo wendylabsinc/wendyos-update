@@ -295,7 +295,7 @@ func (c *Controller) slotPartition(s connector.Slot) (partitionInfo, error) {
 		return partitionInfo{}, fmt.Errorf("identify running slot: %w", err)
 	}
 	if l.root.PartLabel != partlabelFor(current) {
-		return partitionInfo{}, fmt.Errorf("running root %s is labelled %s but firmware reports slot %s; refusing an unsafe slot mapping", l.root.Path, l.root.PartLabel, current)
+		return partitionInfo{}, fmt.Errorf("running root %s is labelled %s but firmware reports slot %s, so the spare slot is unknown and neither slot is touched; this follows a firmware fallback or a slot written by hand: check nvbootctrl dump-slots-info, then switch the firmware to the running slot or reflash", l.root.Path, l.root.PartLabel, current)
 	}
 	return l.onBootDisk([]string{partlabelFor(s)})
 }
