@@ -26,7 +26,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
@@ -46,8 +45,8 @@ const (
 	ESPCapsuleRel  = "EFI/UpdateCapsule/TEGRA_BL.Cap"
 
 	// ESRT verdict of the last capsule attempt (entry0 on both t234 and
-	// t264). 0 = success; 6163 = NVIDIA: capsule auth/cert failure;
-	// 6164 = NVIDIA: SKU not in BUP; 0x1000-0x4000 = NVIDIA vendor range.
+	// t264). 0 = success; 6163 = NVIDIA: boot-chain update canceled;
+	// 6164 = NVIDIA: GPT metadata update failed.
 	ESRTStatusPath = "/sys/firmware/efi/esrt/entries/entry0/last_attempt_status"
 )
 
@@ -76,16 +75,31 @@ type Controller struct {
 
 	// mountFn mounts a slot's rootfs read-only and returns the mount
 	// dir plus an unmount func. Tests substitute a tempdir binder.
-	mountFn func(dev string) (string, func(), error)
+	mountFn            func(dev string) (string, func(), error)
+	rootIDFn           func() (string, error)
+	listPartsFn        func() ([]partitionInfo, error)
+	mountInfoFn        func(path string) (mountInfo, bool, error)
+	mountESPFn         func(dev string) (string, func(), error)
+	deviceMountsFn     func(id string) ([]string, error)
+	mountESPReadOnlyFn func(dev string) (string, func(), error)
+
+	cachedLayout *bootLayout
 }
 
 func New() *Controller {
-	return &Controller{
-		Nvbootctrl: "nvbootctrl",
-		EfivarsDir: "/sys/firmware/efi/efivars",
-		RootDir:    "",
-		mountFn:    defaultMount,
+	c := &Controller{
+		Nvbootctrl:         "nvbootctrl",
+		EfivarsDir:         "/sys/firmware/efi/efivars",
+		RootDir:            "",
+		mountFn:            defaultMount,
+		rootIDFn:           rootPartitionID,
+		listPartsFn:        listPartitions,
+		mountInfoFn:        mountedFilesystem,
+		deviceMountsFn:     deviceMountpoints,
+		mountESPReadOnlyFn: mountVfatReadOnly,
 	}
+	c.mountESPFn = c.mountVfat
+	return c
 }
 
 // runCmd executes a command and returns combined output as a string.
@@ -126,100 +140,19 @@ func partlabelFor(s connector.Slot) string {
 	return "APP_b"
 }
 
-// PartitionFor resolves the slot's rootfs block device. Port of the
-// switch-rootfs fallback chain, generalized from "the inactive slot" to
-// any slot:
-//
-//  1. /dev/disk/by-partlabel/APP | APP_b (standard on r36/r38)
-//  2. lsblk -rno PATH,PARTLABEL scan
-//  3. ROOTFS_PARTUUID_{A,B} in /etc/nv_boot_control.conf
-//  4. arithmetic on the current root device's partition number
-//     (slots are consecutive: A=pN, B=pN+1)
+// PartitionFor resolves the slot on the disk containing the running root.
+// Global by-partlabel links are ambiguous when eMMC and NVMe both carry APP,
+// so a label is used globally only when the root has no disk and no other
+// disk shares it. Refuse anything else rather than risk an unrelated disk.
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
-	label := partlabelFor(s)
-
-	// 1) by-partlabel symlink
-	link := c.RootDir + "/dev/disk/by-partlabel/" + label
-	if dev, err := filepath.EvalSymlinks(link); err == nil {
-		return dev, nil
+	if s != connector.SlotA && s != connector.SlotB {
+		return "", fmt.Errorf("invalid slot %d", s)
 	}
-
-	// 2) lsblk PARTLABEL scan
-	if out, err := exec.Command("lsblk", "-rno", "PATH,PARTLABEL").Output(); err == nil {
-		for _, line := range strings.Split(string(out), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 2 && fields[1] == label {
-				return fields[0], nil
-			}
-		}
-	}
-
-	// 3) PARTUUID from nv_boot_control.conf
-	key := "ROOTFS_PARTUUID_A"
-	if s == connector.SlotB {
-		key = "ROOTFS_PARTUUID_B"
-	}
-	if data, err := os.ReadFile(c.RootDir + "/etc/nv_boot_control.conf"); err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			fields := strings.Fields(line)
-			if len(fields) == 2 && fields[0] == key {
-				link := c.RootDir + "/dev/disk/by-partuuid/" + fields[1]
-				if dev, err := filepath.EvalSymlinks(link); err == nil {
-					return dev, nil
-				}
-			}
-		}
-	}
-
-	// 4) toggle the partition number of the current root device.
-	cur, err := c.CurrentSlot()
-	if err != nil {
-		return "", fmt.Errorf("partition for slot %s: all lookups failed and current slot unknown: %w", s, err)
-	}
-	rootDev, err := currentRootDevice()
-	if err != nil {
-		return "", fmt.Errorf("partition for slot %s: all lookups failed: %w", s, err)
-	}
-	if s == cur {
-		return rootDev, nil
-	}
-	base, num, err := splitPartDev(rootDev)
+	part, err := c.slotPartition(s)
 	if err != nil {
 		return "", fmt.Errorf("partition for slot %s: %w", s, err)
 	}
-	target := num + int(s) - int(cur)
-	cand := fmt.Sprintf("%sp%d", base, target)
-	if _, err := os.Stat(c.RootDir + cand); err != nil {
-		return "", fmt.Errorf("partition for slot %s: candidate %s does not exist", s, cand)
-	}
-	return cand, nil
-}
-
-// currentRootDevice returns the block device mounted at /.
-func currentRootDevice() (string, error) {
-	out, err := exec.Command("findmnt", "-no", "SOURCE", "/").Output()
-	if err != nil {
-		return "", fmt.Errorf("findmnt /: %w", err)
-	}
-	dev := strings.TrimSpace(string(out))
-	if dev == "" {
-		return "", fmt.Errorf("findmnt /: empty source")
-	}
-	return dev, nil
-}
-
-// splitPartDev splits /dev/nvme0n1p2 -> (/dev/nvme0n1, 2) and
-// /dev/mmcblk0p1 -> (/dev/mmcblk0, 1).
-func splitPartDev(dev string) (string, int, error) {
-	i := strings.LastIndex(dev, "p")
-	if i < 0 || i == len(dev)-1 {
-		return "", 0, fmt.Errorf("unrecognized partition device %q", dev)
-	}
-	num, err := strconv.Atoi(dev[i+1:])
-	if err != nil {
-		return "", 0, fmt.Errorf("unrecognized partition device %q", dev)
-	}
-	return dev[:i], num, nil
+	return part.Path, nil
 }
 
 // statusVar is the efivarfs file for a slot's RootfsStatusSlot variable.
@@ -362,6 +295,11 @@ func (c *Controller) rootfsRedundancyArmed() (bool, error) {
 // actionable message instead of downloading, writing, rebooting, then rolling
 // back.
 func (c *Controller) PreflightInstall() error {
+	// Judged from the RUNNING image's marker: images of one lineage all ship
+	// the capsule, so a staging refusal here is certain after a full slot write.
+	if err := c.capsuleStagingReady(); err != nil {
+		return err
+	}
 	// Advisory: a full ESP does not stop the install, but it does decide it
 	// long before anyone finds out, so say so now rather than after 16 GB.
 	// `wendyos-update check` reports the same condition as a failure.
@@ -370,6 +308,25 @@ func (c *Controller) PreflightInstall() error {
 	}
 
 	return c.rootfsRedundancyReady()
+}
+
+// capsuleStagingReady reports what SwapSlot would refuse a capsule over, when
+// the running image requests capsule updates.
+func (c *Controller) capsuleStagingReady() error {
+	if !c.capsuleUpdateEffective() {
+		return nil
+	}
+	if _, err := os.Stat(c.RootDir + MarkerPath); err != nil {
+		return nil
+	}
+	esp, err := c.capsuleESP()
+	if err != nil {
+		return err
+	}
+	if _, err := c.existingESPMount(esp); err != nil {
+		return err
+	}
+	return c.checkCapsuleBootChainIdle()
 }
 
 // rootfsRedundancyReady reports whether a rootfs slot switch can take effect.
@@ -426,8 +383,8 @@ const espHeadroomMargin = 1 << 20
 // against what is already staged: copyFileSync writes a temp file and renames,
 // so the old capsule still holds its clusters while the new one is written.
 //
-// Every probe is best-effort. Anything unreadable returns nil — an unknown
-// state must never be the reason an install does not start.
+// The ESP is measured where staging would find it, else through any other
+// mount or a temporary read-only one: `check` must never write to the ESP.
 func (c *Controller) espCapsuleHeadroom() error {
 	if !c.capsuleUpdateEffective() {
 		return nil
@@ -441,9 +398,21 @@ func (c *Controller) espCapsuleHeadroom() error {
 	}
 	need := fi.Size() + espHeadroomMargin
 
-	espDir, err := c.espMountpoint()
+	esp, err := c.capsuleESP()
 	if err != nil {
-		return nil
+		return err
+	}
+	espDir, err := c.existingESPMount(esp)
+	if err != nil {
+		return err
+	}
+	if espDir == "" {
+		dir, release, err := c.espMeasureMount(esp)
+		if err != nil {
+			return err
+		}
+		defer release()
+		espDir = dir
 	}
 	var st unix.Statfs_t
 	if err := unix.Statfs(espDir, &st); err != nil {
@@ -453,7 +422,7 @@ func (c *Controller) espCapsuleHeadroom() error {
 		return fmt.Errorf("the ESP (%s) has %d bytes free but staging the bootloader "+
 			"capsule needs %d (capsule %d + margin): the install would run to completion "+
 			"and then fail at the last step. Free space on the ESP, or reflash to pick up "+
-			"a larger one", espDir, free, need, fi.Size())
+			"a larger one", esp.Path, free, need, fi.Size())
 	}
 	return nil
 }
@@ -468,6 +437,15 @@ func (c *Controller) CheckReadiness() []connector.Check {
 		checks[0].Detail = "not applicable: boot-chain A/B moves the rootfs slot"
 	} else {
 		checks[0].Detail = "armed"
+	}
+	if c.capsuleUpdateEffective() {
+		if _, err := os.Stat(c.RootDir + MarkerPath); err == nil {
+			chain := connector.Check{Name: "capsule boot-chain state", OK: true}
+			if err := c.checkCapsuleBootChainIdle(); err != nil {
+				chain.OK, chain.Detail = false, err.Error()
+			}
+			checks = append(checks, chain)
+		}
 	}
 
 	esp := connector.Check{Name: "ESP capsule headroom", OK: true}

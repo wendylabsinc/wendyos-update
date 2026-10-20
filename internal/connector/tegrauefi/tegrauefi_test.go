@@ -281,29 +281,6 @@ func TestCurrentSlot(t *testing.T) {
 	}
 }
 
-func TestSplitPartDev(t *testing.T) {
-	for _, tc := range []struct {
-		dev  string
-		base string
-		num  int
-		err  bool
-	}{
-		{"/dev/nvme0n1p2", "/dev/nvme0n1", 2, false},
-		{"/dev/mmcblk0p1", "/dev/mmcblk0", 1, false},
-		{"/dev/nvme0n1p17", "/dev/nvme0n1", 17, false},
-		{"/dev/sda2", "", 0, true}, // no 'p' separator scheme
-		{"/dev/nvme0n1p", "", 0, true},
-	} {
-		base, num, err := splitPartDev(tc.dev)
-		if tc.err != (err != nil) {
-			t.Fatalf("%s: err=%v, want err=%v", tc.dev, err, tc.err)
-		}
-		if !tc.err && (base != tc.base || num != tc.num) {
-			t.Fatalf("%s: got (%s,%d), want (%s,%d)", tc.dev, base, num, tc.base, tc.num)
-		}
-	}
-}
-
 func TestStatusIsNormal(t *testing.T) {
 	normal := []byte{0x07, 0, 0, 0, 0, 0, 0, 0}
 	unbootable := []byte{0x07, 0, 0, 0, 0xFF, 0, 0, 0}
@@ -399,5 +376,36 @@ func TestMarkGoodNoBookkeeping(t *testing.T) {
 	// no vars, no boot_attempted: must succeed as a no-op
 	if err := c.MarkGood(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A capsule the staging step would refuse is refused before the slot is
+// written; an image that requests no capsule is not held to it.
+func TestPreflightRefusesCapsuleStagingProblems(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		edit func(t *testing.T, c *Controller)
+	}{
+		{"pending boot-chain request", func(t *testing.T, c *Controller) {
+			bootChainTestVar(t, c, "BootChainFwNext", 0)
+		}},
+		{"ESP not resolvable", func(t *testing.T, c *Controller) {
+			c.listPartsFn = func() ([]partitionInfo, error) { return dualDiskParts()[:7], nil }
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := storageController(t)
+			writeRunningCapsule(t, c)
+			tc.edit(t, c)
+			if err := c.PreflightInstall(); err == nil {
+				t.Fatal("install allowed although capsule staging would be refused")
+			}
+
+			c = storageController(t)
+			tc.edit(t, c)
+			if err := c.PreflightInstall(); err != nil {
+				t.Fatalf("image without a capsule refused: %v", err)
+			}
+		})
 	}
 }
