@@ -40,6 +40,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/wendylabsinc/wendyos-update/internal/blockdev"
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
@@ -108,8 +109,8 @@ type Controller struct {
 	RootDir string // prefix for filesystem lookups (tests); "" in production
 
 	env          envStore
-	rootDeviceFn func() (string, error)     // block device mounted at /
-	listPartsFn  func() ([]partInfo, error) // block partitions (lsblk)
+	rootDeviceFn func() (string, error)                // block device mounted at /
+	listPartsFn  func(root string) ([]partInfo, error) // block partitions (lsblk)
 }
 
 func New() *Controller {
@@ -121,8 +122,50 @@ func New() *Controller {
 }
 
 var _ connector.Connector = (*Controller)(nil)
+var _ connector.StatusSnapshotter = (*Controller)(nil)
 
 func (c *Controller) Name() string { return "grubenv" }
+
+// StatusSnapshot reuses the root, partition and GRUB env observations for one
+// status request, including its verbose diagnostics. Keep this state on a
+// copy: an install or a later status request must observe the device again.
+func (c *Controller) StatusSnapshot() connector.StatusReader {
+	view := *c
+	view.env = &envSnapshot{store: c.env, reads: make(map[string]envRead)}
+	root, rootErr := c.rootDeviceFn()
+	view.rootDeviceFn = func() (string, error) { return root, rootErr }
+	if rootErr != nil {
+		return &view // CurrentSlot reports the error without a partition scan.
+	}
+	parts, partsErr := c.listPartsFn(root)
+	view.listPartsFn = func(string) ([]partInfo, error) { return parts, partsErr }
+	return &view
+}
+
+// envSnapshot reads each variable once per status request. Status never
+// writes the env, so a write through a snapshot is a bug.
+type envSnapshot struct {
+	store envStore
+	reads map[string]envRead
+}
+
+type envRead struct {
+	value string
+	err   error
+}
+
+func (e *envSnapshot) get(name string) (string, error) {
+	r, ok := e.reads[name]
+	if !ok {
+		r.value, r.err = e.store.get(name)
+		e.reads[name] = r
+	}
+	return r.value, r.err
+}
+
+func (e *envSnapshot) set(map[string]string) error {
+	return fmt.Errorf("grubenv: a status snapshot is read-only")
+}
 
 // --- grub-editenv-backed envStore ---
 
@@ -263,10 +306,24 @@ func canon(dev string) string {
 	return dev
 }
 
-// lsblkParts lists block partitions with their partlabel, fs label and parent
-// disk. -P (KEY="value") is robust to empty columns.
-func lsblkParts() ([]partInfo, error) {
-	out, err := exec.Command("lsblk", "-Pno", "PATH,PARTLABEL,LABEL,PKNAME").Output()
+// lsblkParts lists the running root's disk when sysfs identifies it. Reading
+// filesystem labels across unrelated firmware disks can take seconds on
+// Qualcomm boards. Unknown layouts, or a failed scoped scan, scan every disk.
+func lsblkParts(root string) ([]partInfo, error) {
+	return lsblkPartsOn(rootDiskDevice(root, "/sys"))
+}
+
+func lsblkPartsOn(disk string) ([]partInfo, error) {
+	if disk != "" {
+		if parts, err := runLsblk("--", disk); err == nil {
+			return parts, nil
+		}
+	}
+	return runLsblk()
+}
+
+func runLsblk(args ...string) ([]partInfo, error) {
+	out, err := exec.Command("lsblk", append([]string{"-Pno", "PATH,PARTLABEL,LABEL,PKNAME"}, args...)...).Output()
 	if err != nil {
 		return nil, err
 	}
@@ -283,6 +340,20 @@ func lsblkParts() ([]partInfo, error) {
 		})
 	}
 	return parts, nil
+}
+
+// rootDiskDevice returns the disk holding the root partition, from the
+// kernel's topology rather than device names or labels, or "" when the root
+// is not a partition and every disk must be scanned.
+func rootDiskDevice(root, sysfs string) string {
+	if root == "" {
+		return ""
+	}
+	_, disk, err := blockdev.PartitionDisk(blockdev.SysfsByName(sysfs, filepath.Base(canon(root))))
+	if err != nil {
+		return ""
+	}
+	return disk.Path
 }
 
 // lsblkField extracts KEY's value from an lsblk -P line (KEY="value" ...).
@@ -305,11 +376,7 @@ func lsblkField(line, key string) string {
 // this disk so a SECOND disk carrying the same rootfsA/rootfsB (e.g. the install
 // media beside the internal disk) cannot shadow the disk we actually booted
 // from — and so `install` never writes the inactive slot to the wrong disk.
-func (c *Controller) bootDisk(parts []partInfo) (string, error) {
-	root, err := c.rootDeviceFn()
-	if err != nil {
-		return "", err
-	}
+func bootDisk(parts []partInfo, root string) (string, error) {
 	root = canon(root)
 	for _, p := range parts {
 		if canon(p.path) == root {
@@ -325,9 +392,10 @@ func (c *Controller) bootDisk(parts []partInfo) (string, error) {
 // running root is not listed by lsblk (early boot / unit tests).
 func (c *Controller) PartitionFor(s connector.Slot) (string, error) {
 	label := rootfsSlotLabel(s)
+	root, _ := c.rootDeviceFn()
 
-	if parts, err := c.listPartsFn(); err == nil {
-		if disk, err := c.bootDisk(parts); err == nil && disk != "" {
+	if parts, err := c.listPartsFn(root); err == nil {
+		if disk, err := bootDisk(parts, root); err == nil && disk != "" {
 			for _, p := range parts {
 				if effectiveLabel(p) == label && p.pkname == disk {
 					return p.path, nil
@@ -360,7 +428,7 @@ func (c *Controller) CurrentSlot() (connector.Slot, error) {
 
 	// Identify the running root by its OWN partlabel (unambiguous even when a
 	// second disk carries the same rootfsA/rootfsB).
-	if parts, err := c.listPartsFn(); err == nil {
+	if parts, err := c.listPartsFn(root); err == nil {
 		for _, p := range parts {
 			if canon(p.path) != root {
 				continue
