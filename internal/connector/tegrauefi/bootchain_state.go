@@ -3,19 +3,25 @@ package tegrauefi
 import (
 	"encoding/binary"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/wendylabsinc/wendyos-update/internal/connector"
 )
 
-// rollbackAlreadyActive avoids creating a new BootChainFwNext request after
-// firmware has already fallen back to the rollback slot. Only Orin uses the
-// boot-chain slot-switch path. A still-pending switch must retain the normal
-// rollback path, even when userspace is still running the origin slot.
-func (c *Controller) rollbackAlreadyActive(s connector.Slot) (bool, error) {
-	if !c.bootChainSlotAB() {
+// bootChainStatusInProgress is NVIDIA's BootChainFwStatus value for a switch
+// the firmware has started but not yet judged.
+const bootChainStatusInProgress = 1
+
+// keepRunningSlot makes the running slot s the next boot by withdrawing any
+// BootChainFwNext request instead of issuing one: nvbootctrl cannot remove a
+// request, and the capsule check refuses to stage while one exists. With no
+// request the firmware boots the current chain.
+func (c *Controller) keepRunningSlot(s connector.Slot) (bool, error) {
+	// Only where capsules stage does a request block anything, and only there
+	// is withdrawing one validated.
+	if !c.capsuleUpdateEffective() {
 		return false, nil
 	}
 	cur, err := c.CurrentSlot()
@@ -25,63 +31,43 @@ func (c *Controller) rollbackAlreadyActive(s connector.Slot) (bool, error) {
 	if cur != s {
 		return false, nil
 	}
-
-	next, hasNext, err := c.readBootChainVariable("BootChainFwNext")
+	// The firmware falls back to the chain it booted, not to the rootfs slot.
+	chain, hasChain, err := c.readBootChainVariable("BootChainFwCurrent")
 	if err != nil {
 		return false, err
 	}
-	if hasNext && next > 1 {
-		return false, fmt.Errorf("invalid BootChainFwNext value %d; refusing to infer a settled rollback", next)
+	if !hasChain {
+		return false, fmt.Errorf("firmware does not report its boot chain (BootChainFwCurrent missing)")
 	}
-	_, hasStatus, err := c.readBootChainVariable("BootChainFwStatus")
+	if chain != uint32(s) {
+		return false, fmt.Errorf("firmware booted chain %d, not the running slot %s", chain, s)
+	}
+	// Mid-switch the firmware judges the outcome by BootChainFwNext.
+	status, hasStatus, err := c.readBootChainVariable("BootChainFwStatus")
 	if err != nil {
 		return false, err
 	}
-	if hasNext || hasStatus {
-		return false, nil
+	if hasStatus && status == bootChainStatusInProgress {
+		return false, fmt.Errorf("the firmware is still judging a boot-chain switch")
+	}
+	// An armed capsule switches the chain at reboot; only a request cancels it.
+	osi, err := os.ReadFile(filepath.Join(c.EfivarsDir, "OsIndications-"+EfiGlobalGUID))
+	if err != nil && !os.IsNotExist(err) {
+		return false, fmt.Errorf("read OsIndications: %w", err)
+	}
+	if len(osi) >= 5 && osi[4]&osIndicationsProcessCapsule != 0 {
+		return false, fmt.Errorf("a capsule is still armed for the next boot")
 	}
 
-	out, err := runCmd(c.Nvbootctrl, "dump-slots-info")
-	if err != nil {
-		return false, fmt.Errorf("check rollback boot chain: nvbootctrl dump-slots-info: %w (%s)", err, out)
+	next := filepath.Join(c.EfivarsDir, "BootChainFwNext-"+VendorGUID)
+	pending, _ := os.ReadFile(next)
+	if err := removeVar(next); err != nil {
+		return false, fmt.Errorf("withdraw BootChainFwNext: %w", err)
 	}
-	current, active, err := parseBootloaderSlots(out)
-	if err != nil {
-		return false, err
+	if len(pending) > 0 {
+		slog.Info("rollback: withdrew the pending boot-chain request", "slot", s.String(), "request", fmt.Sprintf("% x", pending))
 	}
-	if current != cur {
-		return false, fmt.Errorf("bootloader slot changed while checking rollback: current-slot=%s dump=%s", cur, current)
-	}
-	return active == s, nil
-}
-
-func parseBootloaderSlots(out string) (current, active connector.Slot, err error) {
-	values := make(map[string]connector.Slot)
-	for _, line := range strings.Split(out, "\n") {
-		key, value, ok := strings.Cut(strings.TrimSpace(line), ":")
-		if !ok || (key != "Current bootloader slot" && key != "Active bootloader slot") {
-			continue
-		}
-		if _, exists := values[key]; exists {
-			return 0, 0, fmt.Errorf("nvbootctrl dump-slots-info: duplicate %s", key)
-		}
-		switch strings.TrimSpace(value) {
-		case "A":
-			values[key] = connector.SlotA
-		case "B":
-			values[key] = connector.SlotB
-		default:
-			return 0, 0, fmt.Errorf("nvbootctrl dump-slots-info: invalid %s %q", key, value)
-		}
-	}
-	var ok bool
-	if current, ok = values["Current bootloader slot"]; !ok {
-		return 0, 0, fmt.Errorf("nvbootctrl dump-slots-info: missing current bootloader slot")
-	}
-	if active, ok = values["Active bootloader slot"]; !ok {
-		return 0, 0, fmt.Errorf("nvbootctrl dump-slots-info: missing active bootloader slot")
-	}
-	return current, active, nil
+	return true, nil
 }
 
 // checkCapsuleBootChainIdle is deliberately read-only. NVIDIA's FMP check
