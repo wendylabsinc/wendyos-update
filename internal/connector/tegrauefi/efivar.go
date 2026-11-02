@@ -119,6 +119,21 @@ func writeVar(path string, payload []byte) error {
 	return nil
 }
 
+// removeVar deletes an efivar, clearing the immutable flag first. An absent
+// variable is already removed.
+func removeVar(path string) error {
+	if err := clearImmutable(path); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
 // osIndicationsProcessCapsule is bit 2 of the OsIndications UINT64:
 // "process capsule(s) on next boot". Validated on Thor: armed variable
 // reads 07 00 00 00 04 00 00 00 00 00 00 00 (4-byte attrs + UINT64).

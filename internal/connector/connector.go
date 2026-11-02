@@ -62,10 +62,11 @@ type Connector interface {
 	// capsule + OsIndications, and then NOT calling nvbootctrl — the
 	// firmware switches the chain itself).
 	//
-	// stagePlatformUpdate=false is the ROLLBACK swap: a pure re-point of
-	// the active slot. The connector must NOT inspect or mount the target
-	// rootfs — it may be the running slot (unmountable) or an old slot
-	// whose marker is irrelevant — and must never stage an update.
+	// stagePlatformUpdate=false is the ROLLBACK swap: make s the next-boot
+	// slot, for the running slot by cancelling any pending switch (Tegra
+	// withdraws its boot-chain request). The connector must NOT inspect or
+	// mount the target rootfs — it may be the running slot (unmountable) or
+	// an old slot whose marker is irrelevant — and must never stage an update.
 	SwapSlot(s Slot, stagePlatformUpdate bool) error
 
 	// BootIsCompromised reports whether the platform flagged the current

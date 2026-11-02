@@ -39,17 +39,18 @@ var espPartlabels = []string{"esp", "UEFI-ESP"}
 //   - install (true): s is the freshly-written INACTIVE slot. Inspect its
 //     rootfs marker; if a bootloader update is requested, stage the capsule
 //     (the firmware switches the chain) — otherwise nvbootctrl flips it.
-//   - rollback (false): pure re-point via nvbootctrl. Never mount, never
-//     stage. The target may be the running slot (pre-reboot rollback —
-//     unmountable) or an old slot whose marker is irrelevant, so the
-//     install inspection must be skipped entirely.
+//   - rollback (false): re-point via nvbootctrl, or for the running slot
+//     withdraw any pending request. Never mount, never stage. The target may
+//     be the running slot (pre-reboot rollback — unmountable) or an old slot
+//     whose marker is irrelevant, so the install inspection must be skipped
+//     entirely.
 func (c *Controller) SwapSlot(s connector.Slot, stagePlatformUpdate bool) error {
 	if !stagePlatformUpdate {
-		// Re-pointing costs at most a redundant boot-chain request; refusing on
-		// unreadable evidence would strand the rollback.
-		if already, err := c.rollbackAlreadyActive(s); err != nil {
-			slog.Warn("rollback: cannot tell whether the boot chain already settled; re-pointing the slot", "slot", s.String(), "err", err)
-		} else if already {
+		// Re-pointing is the fallback: its request blocks capsule installs until
+		// the next boot, but refusing here would strand the rollback.
+		if kept, err := c.keepRunningSlot(s); err != nil {
+			slog.Warn("rollback: re-pointing the slot instead of withdrawing the boot-chain request", "slot", s.String(), "err", err)
+		} else if kept {
 			return nil
 		}
 		// Rollback: just re-point the active boot slot.
