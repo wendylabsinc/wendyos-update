@@ -319,8 +319,16 @@ func TestReadinessMeasuresESPMountedElsewhere(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := fmt.Sprintf("%d:%d", unix.Major(uint64(st.Dev)), unix.Minor(uint64(st.Dev)))
+	// The runner may use the same device number as the mock root partition.
+	// Keep the fake root distinct from the real filesystem used as the ESP.
+	rootID := "259:1"
+	if rootID == id {
+		rootID = "259:99"
+	}
+	c.rootIDFn = func() (string, error) { return rootID, nil }
 	c.listPartsFn = func() ([]partitionInfo, error) {
 		p := dualDiskParts()
+		p[5].DeviceID = rootID
 		p[7].DeviceID = id
 		return p, nil
 	}
